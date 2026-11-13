@@ -1,10 +1,20 @@
 package com.cityguide.data
 
+import android.content.Context
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
@@ -12,11 +22,24 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.File
+import java.io.IOException
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.math.min
 
 /** Місце з OpenStreetMap до збагачення даними Wikidata. */
 data class RawPlace(
@@ -36,6 +59,9 @@ data class WikiInfo(
     val wikiLang: String?
 )
 
+/** Результат одного запиту: визначні місця й заклади харчування. */
+data class AroundResult(val sights: List<RawPlace>, val foods: List<RawPlace>)
+
 data class RouteResult(
     val geometry: List<LatLon>,
     val distance: Double,
@@ -49,47 +75,132 @@ data class Suggestion(val name: String, val subtitle: String, val lat: Double, v
  * Усі джерела безкоштовні й без ключів:
  * Nominatim/Photon (геокодування), Overpass (місця й заклади OSM), Wikidata і Wikipedia
  * (значущість, описи, фото), routing.openstreetmap.de (пішохідні маршрути).
- * Для продакшну потрібен власний кеш-проксі й повага до лімітів цих сервісів.
+ *
+ * Прискорення: один Overpass-запит на місця й заклади, перегони дзеркал Overpass,
+ * паралельні запити до Wikidata, кеш на диску (відповіді Overpass на добу, дані Wikidata на 2 тижні).
  */
 object Api {
 
     /** Спільний клієнт із User-Agent (його вимагають Nominatim і Wikimedia); його ж використовує Coil. */
     val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(40, TimeUnit.SECONDS)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
-                    .header("User-Agent", "CityGuide/0.2 (open-source prototype)")
+                    .header("User-Agent", "CityGuide/0.3 (open-source prototype)")
                     .build()
             )
         }
         .build()
 
-    // Публічні Overpass-сервери часто перевантажені (502/504), тож пробуємо кілька дзеркал
+    // Публічні Overpass-сервери часто перевантажені (502/504), тож опитуємо кілька дзеркал
     private val OVERPASS_ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
         "https://overpass.private.coffee/api/interpreter"
     )
+    private const val MIRROR_STAGGER_MS = 3_000L
+    private const val OVERPASS_TTL_MS = 24L * 60 * 60 * 1000
+    private const val WIKI_TTL_MS = 14L * 24 * 60 * 60 * 1000
+    private const val WIKI_CACHE_MAX = 8_000
+    private const val FOOD_RADIUS_MAX_M = 3_000
+    private val FOOD_AMENITIES = setOf("restaurant", "cafe", "fast_food", "pub", "bar", "ice_cream")
 
-    private fun execute(request: Request): JsonElement =
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) error("Помилка ${resp.code} від ${request.url.host}")
-            val text = resp.body?.string() ?: error("Порожня відповідь від ${request.url.host}")
-            Json.parseToJsonElement(text)
+    private var cacheDir: File? = null
+
+    fun init(context: Context) {
+        cacheDir = File(context.cacheDir, "api").apply { mkdirs() }
+    }
+
+    // --- мережа ---
+
+    private suspend fun executeText(request: Request): String = suspendCancellableCoroutine { cont ->
+        val call = client.newCall(request)
+        cont.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (cont.isActive) cont.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use { resp ->
+                    try {
+                        if (!resp.isSuccessful) error("Помилка ${resp.code} від ${request.url.host}")
+                        val text = resp.body?.string() ?: error("Порожня відповідь від ${request.url.host}")
+                        if (cont.isActive) cont.resume(text)
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
+                }
+            }
+        })
+    }
+
+    private suspend fun execute(request: Request): JsonElement =
+        Json.parseToJsonElement(executeText(request))
+
+    /**
+     * Запускає завдання по черзі: наступне стартує, якщо попереднє зазнало невдачі
+     * або не відповіло за [staggerMs]. Повертає першу успішну відповідь, решту скасовує.
+     */
+    private suspend fun <T> firstSuccess(staggerMs: Long, tasks: List<suspend () -> T>): T =
+        coroutineScope {
+            val results = Channel<Result<T>>(tasks.size)
+            val starts = List(tasks.size) { CompletableDeferred<Unit>() }
+            starts[0].complete(Unit)
+            val jobs = tasks.mapIndexed { i, task ->
+                launch {
+                    if (i > 0) {
+                        launch {
+                            delay(i * staggerMs)
+                            starts[i].complete(Unit)
+                        }
+                    }
+                    starts[i].await()
+                    val result = runCatching { task() }
+                    if (result.isFailure && i + 1 < starts.size) starts[i + 1].complete(Unit)
+                    results.send(result)
+                }
+            }
+            var last: Throwable? = null
+            repeat(tasks.size) {
+                val result = results.receive()
+                if (result.isSuccess) {
+                    jobs.forEach { it.cancel() }
+                    return@coroutineScope result.getOrThrow()
+                }
+                last = result.exceptionOrNull()
+            }
+            throw last ?: IllegalStateException("Немає відповіді")
         }
 
-    private fun overpass(query: String): JsonObject {
-        for (endpoint in OVERPASS_ENDPOINTS) {
+    private fun overpassCacheFile(key: String): File? =
+        cacheDir?.let { File(it, "ov_${key.hashCode().toUInt().toString(16)}.json") }
+
+    /** Overpass із дисковим кешем (на добу) та перегонами дзеркал. */
+    private suspend fun overpass(query: String, cacheKey: String): JsonObject {
+        val file = overpassCacheFile(cacheKey)
+        if (file != null && file.exists() && System.currentTimeMillis() - file.lastModified() < OVERPASS_TTL_MS) {
             try {
-                val body = FormBody.Builder().add("data", query).build()
-                return execute(Request.Builder().url(endpoint).post(body).build()).jsonObject
+                return Json.parseToJsonElement(file.readText()).jsonObject
             } catch (e: Exception) {
-                // пробуємо наступне дзеркало
+                file.delete()
             }
         }
-        error("Сервери карт перевантажені. Спробуйте ще раз за хвилину")
+        val text = firstSuccess(
+            MIRROR_STAGGER_MS,
+            OVERPASS_ENDPOINTS.map { endpoint ->
+                suspend {
+                    val body = FormBody.Builder().add("data", query).build()
+                    executeText(Request.Builder().url(endpoint).post(body).build())
+                }
+            }
+        )
+        val root = Json.parseToJsonElement(text).jsonObject
+        // Відповідь із "remark" означає таймаут або обрізані дані: не кешуємо
+        if (root["remark"] == null) runCatching { file?.writeText(text) }
+        return root
     }
 
     // --- пошук міста ---
@@ -110,33 +221,42 @@ object Api {
         )
     }
 
+    private val suggestCache = ConcurrentHashMap<String, List<Suggestion>>()
+
     /** Підказки назв міст під час введення (Photon, розрахований на автодоповнення). */
-    suspend fun suggest(query: String): List<Suggestion> = withContext(Dispatchers.IO) {
-        val url = "https://photon.komoot.io/api/".toHttpUrl().newBuilder()
-            .addQueryParameter("q", query)
-            .addQueryParameter("limit", "6")
-            .addQueryParameter("osm_tag", "place:city")
-            .addQueryParameter("osm_tag", "place:town")
-            .addQueryParameter("osm_tag", "place:village")
-            .build()
-        val features = execute(Request.Builder().url(url).build())
-            .jsonObject["features"]?.jsonArray.orEmpty()
-        features.mapNotNull { f ->
-            val o = f.jsonObject
-            val props = o["properties"] as? JsonObject ?: return@mapNotNull null
-            val name = props["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val coords = o["geometry"]?.jsonObject?.get("coordinates")?.jsonArray
-                ?: return@mapNotNull null
-            val subtitle = listOf("state", "country")
-                .mapNotNull { props[it]?.jsonPrimitive?.contentOrNull }
-                .joinToString(", ")
-            Suggestion(
-                name = name,
-                subtitle = subtitle,
-                lat = coords[1].jsonPrimitive.double,
-                lon = coords[0].jsonPrimitive.double
-            )
-        }.distinctBy { it.name + it.subtitle }
+    suspend fun suggest(query: String): List<Suggestion> {
+        val key = query.lowercase(Locale.ROOT)
+        suggestCache[key]?.let { return it }
+        val result = withContext(Dispatchers.IO) {
+            val url = "https://photon.komoot.io/api/".toHttpUrl().newBuilder()
+                .addQueryParameter("q", query)
+                .addQueryParameter("limit", "6")
+                .addQueryParameter("osm_tag", "place:city")
+                .addQueryParameter("osm_tag", "place:town")
+                .addQueryParameter("osm_tag", "place:village")
+                .build()
+            val features = execute(Request.Builder().url(url).build())
+                .jsonObject["features"]?.jsonArray.orEmpty()
+            features.mapNotNull { f ->
+                val o = f.jsonObject
+                val props = o["properties"] as? JsonObject ?: return@mapNotNull null
+                val name = props["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val coords = o["geometry"]?.jsonObject?.get("coordinates")?.jsonArray
+                    ?: return@mapNotNull null
+                val subtitle = listOf("state", "country")
+                    .mapNotNull { props[it]?.jsonPrimitive?.contentOrNull }
+                    .joinToString(", ")
+                Suggestion(
+                    name = name,
+                    subtitle = subtitle,
+                    lat = coords[1].jsonPrimitive.double,
+                    lon = coords[0].jsonPrimitive.double
+                )
+            }.distinctBy { it.name + it.subtitle }
+        }
+        if (suggestCache.size > 100) suggestCache.clear()
+        suggestCache[key] = result
+        return result
     }
 
     /** Назва населеного пункту за координатами (best-effort). */
@@ -161,12 +281,10 @@ object Api {
 
     // --- місця й заклади (Overpass) ---
 
-    private fun parseElements(root: JsonObject, requireWikidata: Boolean): List<RawPlace> =
+    private fun parseElements(root: JsonObject): List<RawPlace> =
         root["elements"]?.jsonArray.orEmpty().mapNotNull { element ->
             val o = element.jsonObject
             val tags = o["tags"] as? JsonObject ?: return@mapNotNull null
-            val wikidata = tags["wikidata"]?.jsonPrimitive?.contentOrNull
-            if (requireWikidata && wikidata == null) return@mapNotNull null
             val center = o["center"] as? JsonObject
             val lat = (o["lat"] ?: center?.get("lat"))?.jsonPrimitive?.doubleOrNull
                 ?: return@mapNotNull null
@@ -177,7 +295,7 @@ object Api {
             val tagMap = tags.mapValues { it.value.jsonPrimitive.content }
             RawPlace(
                 id = "$type/$osmId",
-                wikidataId = wikidata,
+                wikidataId = tagMap["wikidata"],
                 name = tagMap["name"],
                 lat = lat,
                 lon = lon,
@@ -186,12 +304,13 @@ object Api {
         }.distinctBy { it.wikidataId ?: it.id }
 
     /**
-     * Звичайний режим: лише об'єкти з тегом wikidata (відсікає лавки й таблички).
-     * Розширений: додатково іменовані атракції, замки, пам'ятники тощо без запису у Wikidata.
+     * Один запит на все: визначні місця (з тегом wikidata; у розширеному режимі ще й іменовані
+     * атракції, замки, пам'ятники) та заклади харчування (до 3 км від центру).
      */
-    suspend fun fetchPlaces(city: City, radiusM: Int, extended: Boolean): List<RawPlace> =
+    suspend fun fetchAround(city: City, radiusM: Int, extended: Boolean): AroundResult =
         withContext(Dispatchers.IO) {
             val around = "(around:$radiusM,${city.lat},${city.lon})"
+            val foodAround = "(around:${min(radiusM, FOOD_RADIUS_MAX_M)},${city.lat},${city.lon})"
             val clauses = mutableListOf(
                 "nwr[\"wikidata\"][\"tourism\"~\"^(attraction|museum|gallery|viewpoint|artwork)\$\"]$around;",
                 "nwr[\"wikidata\"][\"historic\"]$around;",
@@ -203,50 +322,134 @@ object Api {
                 clauses += "nwr[\"name\"][\"historic\"~\"^(castle|monument|memorial|ruins|fort|archaeological_site|city_gate|manor)\$\"]$around;"
             }
             val limit = if (extended) 500 else 300
-            val query = "[out:json][timeout:30];(" + clauses.joinToString("") + ");out center tags $limit;"
-            parseElements(overpass(query), requireWikidata = false)
-        }
+            val query = "[out:json][timeout:30];(" + clauses.joinToString("") + ")->.s;" +
+                "nwr[\"amenity\"~\"^(restaurant|cafe|fast_food|pub|bar|ice_cream)\$\"][\"name\"]$foodAround->.f;" +
+                ".s out center tags $limit;.f out center tags 400;"
 
-    suspend fun fetchFood(city: City, radiusM: Int): List<RawPlace> = withContext(Dispatchers.IO) {
-        val around = "(around:$radiusM,${city.lat},${city.lon})"
-        val query = "[out:json][timeout:30];(" +
-            "nwr[\"amenity\"~\"^(restaurant|cafe|fast_food|pub|bar|ice_cream)\$\"][\"name\"]$around;" +
-            ");out center tags 400;"
-        parseElements(overpass(query), requireWikidata = false)
-    }
+            val key = String.format(Locale.US, "v2_%.3f_%.3f_%d_%b", city.lat, city.lon, radiusM, extended)
+            val (foods, sights) = parseElements(overpass(query, key))
+                .partition { it.tags["amenity"] in FOOD_AMENITIES }
+            AroundResult(sights = sights, foods = foods)
+        }
 
     // --- Wikidata / Wikipedia ---
 
+    private data class CachedWiki(val info: WikiInfo, val ts: Long)
+
+    private val wikiCache = ConcurrentHashMap<String, CachedWiki>()
+
+    @Volatile
+    private var wikiCacheLoaded = false
+
+    private fun wikiCacheFile(): File? = cacheDir?.let { File(it, "wikidata-cache-v1.json") }
+
+    @Synchronized
+    private fun loadWikiCache() {
+        if (wikiCacheLoaded) return
+        wikiCacheLoaded = true
+        val file = wikiCacheFile() ?: return
+        try {
+            val obj = Json.parseToJsonElement(file.readText()).jsonObject
+            for ((key, value) in obj) {
+                val o = value as? JsonObject ?: continue
+                wikiCache[key] = CachedWiki(
+                    WikiInfo(
+                        label = o["l"]?.jsonPrimitive?.contentOrNull,
+                        description = o["d"]?.jsonPrimitive?.contentOrNull,
+                        sitelinks = o["s"]?.jsonPrimitive?.intOrNull ?: 0,
+                        wikiTitle = o["t"]?.jsonPrimitive?.contentOrNull,
+                        wikiLang = o["w"]?.jsonPrimitive?.contentOrNull
+                    ),
+                    o["ts"]?.jsonPrimitive?.longOrNull ?: 0L
+                )
+            }
+        } catch (e: Exception) {
+            // немає або пошкоджений кеш: починаємо з порожнього
+        }
+    }
+
+    @Synchronized
+    private fun saveWikiCache() {
+        val file = wikiCacheFile() ?: return
+        try {
+            val newest = wikiCache.entries.sortedByDescending { it.value.ts }.take(WIKI_CACHE_MAX)
+            val obj = buildJsonObject {
+                for ((key, cached) in newest) {
+                    putJsonObject(key) {
+                        cached.info.label?.let { put("l", it) }
+                        cached.info.description?.let { put("d", it) }
+                        put("s", cached.info.sitelinks)
+                        cached.info.wikiTitle?.let { put("t", it) }
+                        cached.info.wikiLang?.let { put("w", it) }
+                        put("ts", cached.ts)
+                    }
+                }
+            }
+            file.writeText(obj.toString())
+        } catch (e: Exception) {
+            // кеш необов'язковий
+        }
+    }
+
+    /** Кешовані записи беремо з диска, відсутні запитуємо паралельними пачками по 50. */
     suspend fun fetchWikidata(ids: List<String>, lang: String): Map<String, WikiInfo> =
         withContext(Dispatchers.IO) {
+            loadWikiCache()
+            val now = System.currentTimeMillis()
             val result = mutableMapOf<String, WikiInfo>()
-            for (chunk in ids.chunked(50)) {
-                val url = "https://www.wikidata.org/w/api.php".toHttpUrl().newBuilder()
-                    .addQueryParameter("action", "wbgetentities")
-                    .addQueryParameter("ids", chunk.joinToString("|"))
-                    .addQueryParameter("props", "sitelinks|labels|descriptions")
-                    .addQueryParameter("languages", "$lang|en")
-                    .addQueryParameter("format", "json")
-                    .build()
-                val entities = execute(Request.Builder().url(url).build())
-                    .jsonObject["entities"] as? JsonObject ?: continue
-                for ((id, entity) in entities) {
-                    val o = entity as? JsonObject ?: continue
-                    val sitelinks = o["sitelinks"] as? JsonObject
-                    val local = sitelinks?.get("${lang}wiki") as? JsonObject
-                    val english = sitelinks?.get("enwiki") as? JsonObject
-                    val page = local ?: english
-                    result[id] = WikiInfo(
-                        label = o.localized("labels", lang),
-                        description = o.localized("descriptions", lang),
-                        sitelinks = sitelinks?.size ?: 0,
-                        wikiTitle = page?.get("title")?.jsonPrimitive?.contentOrNull,
-                        wikiLang = if (local != null) lang else "en"
-                    )
+            val missing = mutableListOf<String>()
+            for (id in ids.distinct()) {
+                val cached = wikiCache["$lang:$id"]
+                if (cached != null && now - cached.ts < WIKI_TTL_MS) {
+                    result[id] = cached.info
+                } else {
+                    missing += id
                 }
+            }
+            if (missing.isNotEmpty()) {
+                val fetched = coroutineScope {
+                    missing.chunked(50).map { chunk ->
+                        async { runCatching { fetchWikidataChunk(chunk, lang) }.getOrDefault(emptyMap()) }
+                    }.awaitAll()
+                }
+                for (map in fetched) {
+                    for ((id, info) in map) {
+                        result[id] = info
+                        wikiCache["$lang:$id"] = CachedWiki(info, now)
+                    }
+                }
+                saveWikiCache()
             }
             result
         }
+
+    private suspend fun fetchWikidataChunk(ids: List<String>, lang: String): Map<String, WikiInfo> {
+        val url = "https://www.wikidata.org/w/api.php".toHttpUrl().newBuilder()
+            .addQueryParameter("action", "wbgetentities")
+            .addQueryParameter("ids", ids.joinToString("|"))
+            .addQueryParameter("props", "sitelinks|labels|descriptions")
+            .addQueryParameter("languages", "$lang|en")
+            .addQueryParameter("format", "json")
+            .build()
+        val entities = execute(Request.Builder().url(url).build())
+            .jsonObject["entities"] as? JsonObject ?: return emptyMap()
+        val result = mutableMapOf<String, WikiInfo>()
+        for ((id, entity) in entities) {
+            val o = entity as? JsonObject ?: continue
+            val sitelinks = o["sitelinks"] as? JsonObject
+            val local = sitelinks?.get("${lang}wiki") as? JsonObject
+            val english = sitelinks?.get("enwiki") as? JsonObject
+            val page = local ?: english
+            result[id] = WikiInfo(
+                label = o.localized("labels", lang),
+                description = o.localized("descriptions", lang),
+                sitelinks = sitelinks?.size ?: 0,
+                wikiTitle = page?.get("title")?.jsonPrimitive?.contentOrNull,
+                wikiLang = if (local != null) lang else "en"
+            )
+        }
+        return result
+    }
 
     private fun JsonObject.localized(field: String, lang: String): String? {
         val map = this[field] as? JsonObject ?: return null

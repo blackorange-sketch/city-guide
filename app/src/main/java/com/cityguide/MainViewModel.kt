@@ -8,8 +8,10 @@ import com.cityguide.data.City
 import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
+import com.cityguide.data.RawPlace
 import com.cityguide.data.Route
 import com.cityguide.data.Suggestion
+import com.cityguide.data.WikiInfo
 import com.cityguide.domain.Geo
 import com.cityguide.domain.Instructions
 import com.cityguide.domain.RoutePlanner
@@ -164,12 +166,7 @@ class MainViewModel : ViewModel() {
 
     fun toggleFood() {
         val s = _state.value
-        val turnOn = !s.showFood
-        _state.update { it.copy(showFood = turnOn) }
-        val city = s.city ?: return
-        if (turnOn && s.foods.isEmpty()) {
-            launchLoading("Шукаю заклади харчування…") { loadFood(city) }
-        }
+        _state.update { it.copy(showFood = !s.showFood) }
     }
 
     // --- вибране місце ---
@@ -242,9 +239,7 @@ class MainViewModel : ViewModel() {
     fun addLunch() {
         val s = _state.value
         val route = s.route ?: return
-        val city = s.city ?: return
         launchLoading("Шукаю заклад біля маршруту…") {
-            if (_state.value.foods.isEmpty()) loadFood(city)
             val food = RoutePlanner.lunchCandidate(route.stops, _state.value.foods)
                 ?: error("Поблизу середини маршруту не знайдено закладів")
             val stops = route.stops.toMutableList()
@@ -459,60 +454,72 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    private fun toPlace(r: RawPlace, wiki: WikiInfo?): Place? {
+        val name = wiki?.label ?: r.name ?: return null
+        return Place(
+            id = r.id,
+            wikidataId = r.wikidataId,
+            name = name,
+            description = wiki?.description,
+            lat = r.lat,
+            lon = r.lon,
+            category = RoutePlanner.categorize(r.tags),
+            score = wiki?.sitelinks ?: 0,
+            wikiTitle = wiki?.wikiTitle,
+            wikiLang = wiki?.wikiLang,
+            website = r.tags["website"] ?: r.tags["contact:website"]
+        )
+    }
+
+    private fun toFood(r: RawPlace) = Place(
+        id = r.id,
+        wikidataId = null,
+        name = r.name ?: "Заклад",
+        description = RoutePlanner.foodDescription(r.tags),
+        lat = r.lat,
+        lon = r.lon,
+        category = Category.FOOD,
+        score = RoutePlanner.foodScore(r.tags),
+        website = r.tags["website"] ?: r.tags["contact:website"],
+        hours = r.tags["opening_hours"]
+    )
+
+    /**
+     * Один запит Overpass дає і місця, і заклади. Попередній список показуємо одразу,
+     * а після відповіді Wikidata (паралельно, з кешем) уточнюємо назви й значущість.
+     */
     private suspend fun loadPlaces(city: City) {
         _state.update {
             it.copy(
                 city = city, route = null, selected = null, detail = null,
                 places = emptyList(), foods = emptyList(),
-                status = "Завантажую визначні місця…"
+                status = "Завантажую місця та заклади…"
             )
         }
         val extended = _state.value.extended
-        val raw = Api.fetchPlaces(city, radiusM(), extended)
-        if (raw.isEmpty()) error("Поблизу не знайдено місць. Збільште радіус або увімкніть розширений пошук")
+        val limit = if (extended) MAX_PLACES_EXTENDED else MAX_PLACES
+        val around = Api.fetchAround(city, radiusM(), extended)
+        if (around.sights.isEmpty()) {
+            error("Поблизу не знайдено місць. Збільште радіус або увімкніть розширений пошук")
+        }
 
-        _state.update { it.copy(status = "Оцінюю значущість місць…") }
-        val info = Api.fetchWikidata(raw.mapNotNull { it.wikidataId }, lang)
+        val foods = around.foods.map { toFood(it) }.sortedByDescending { it.score }.take(MAX_FOOD)
+        val preliminary = around.sights.mapNotNull { toPlace(it, null) }.take(limit)
+        _state.update {
+            it.copy(places = preliminary, foods = foods, status = "Оцінюю значущість місць…")
+        }
 
-        val places = raw.mapNotNull { r ->
-            val wiki = r.wikidataId?.let { info[it] }
-            val name = wiki?.label ?: r.name ?: return@mapNotNull null
-            Place(
-                id = r.id,
-                wikidataId = r.wikidataId,
-                name = name,
-                description = wiki?.description,
-                lat = r.lat,
-                lon = r.lon,
-                category = RoutePlanner.categorize(r.tags),
-                score = wiki?.sitelinks ?: 0,
-                wikiTitle = wiki?.wikiTitle,
-                wikiLang = wiki?.wikiLang,
-                website = r.tags["website"] ?: r.tags["contact:website"]
-            )
-        }.sortedByDescending { it.score }.take(if (extended) MAX_PLACES_EXTENDED else MAX_PLACES)
-
+        val info = try {
+            Api.fetchWikidata(around.sights.mapNotNull { it.wikidataId }, lang)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        val places = around.sights.mapNotNull { toPlace(it, it.wikidataId?.let { id -> info[id] }) }
+            .sortedByDescending { it.score }
+            .take(limit)
         _state.update { it.copy(places = places, status = null) }
-        if (_state.value.showFood) loadFood(city)
-    }
-
-    private suspend fun loadFood(city: City) {
-        _state.update { it.copy(status = "Шукаю заклади харчування…") }
-        val foods = Api.fetchFood(city, radiusM()).map { r ->
-            Place(
-                id = r.id,
-                wikidataId = null,
-                name = r.name ?: "Заклад",
-                description = RoutePlanner.foodDescription(r.tags),
-                lat = r.lat,
-                lon = r.lon,
-                category = Category.FOOD,
-                score = RoutePlanner.foodScore(r.tags),
-                website = r.tags["website"] ?: r.tags["contact:website"],
-                hours = r.tags["opening_hours"]
-            )
-        }.sortedByDescending { it.score }.take(MAX_FOOD)
-        _state.update { it.copy(foods = foods, status = null) }
     }
 
     private fun launchLoading(status: String, block: suspend () -> Unit) {
