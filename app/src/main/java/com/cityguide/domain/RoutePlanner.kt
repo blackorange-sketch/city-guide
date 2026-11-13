@@ -45,7 +45,9 @@ object RoutePlanner {
         "fast_food" to R.string.food_fast_food,
         "pub" to R.string.food_pub,
         "bar" to R.string.food_bar,
-        "ice_cream" to R.string.food_ice_cream
+        "ice_cream" to R.string.food_ice_cream,
+        "food_court" to R.string.food_food_court,
+        "biergarten" to R.string.food_biergarten
     )
 
     private val USEFUL_FOOD_TAGS = listOf(

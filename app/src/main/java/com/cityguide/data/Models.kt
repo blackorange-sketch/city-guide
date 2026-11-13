@@ -43,10 +43,37 @@ data class Place(
     val hours: String? = null,
     /** Рейтинг закладу (0-10, Foursquare) і цінова категорія 1-4, якщо відомі. */
     val rating: Double? = null,
-    val price: Int? = null
+    val price: Int? = null,
+    /** Відібрані теги OSM для екрана докладної інформації. */
+    val tags: Map<String, String> = emptyMap()
 ) {
     val pos: LatLon get() = LatLon(lat, lon)
 }
+
+/** Тип факту на екрані докладної інформації. */
+enum class FactKind(@StringRes val labelRes: Int) {
+    ADDRESS(R.string.fact_address),
+    PHONE(R.string.fact_phone),
+    EMAIL(R.string.fact_email),
+    HOURS(R.string.fact_hours),
+    CUISINE(R.string.fact_cuisine),
+    OUTDOOR(R.string.fact_outdoor),
+    TAKEAWAY(R.string.fact_takeaway),
+    DELIVERY(R.string.fact_delivery),
+    VEGETARIAN(R.string.fact_vegetarian),
+    WHEELCHAIR(R.string.fact_wheelchair),
+    FEE(R.string.fact_fee),
+    INCEPTION(R.string.fact_inception),
+    ARCHITECT(R.string.fact_architect),
+    STYLE(R.string.fact_style),
+    HERITAGE(R.string.fact_heritage),
+    HEIGHT(R.string.fact_height)
+}
+
+data class InfoFact(val kind: FactKind, val value: String)
+
+/** Розділ статті Вікіпедії: заголовок (null для вступу) і текст з абзацами. */
+data class ArticleSection(val title: String?, val text: String)
 
 /** Фото й розгорнутий опис зі Вікіпедії, що завантажуються при виборі місця. */
 data class PlaceDetail(val extract: String?, val imageUrl: String?, val pageUrl: String?)

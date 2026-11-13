@@ -107,13 +107,13 @@ fun formatDistance(meters: Double): String =
 private fun kmLabel(km: Double): String =
     stringResource(R.string.dist_km, if (km % 1.0 == 0.0) km.toInt().toString() else km.toString())
 
-private fun openUrl(context: Context, url: String) {
+internal fun openUrl(context: Context, url: String) {
     val full = if (url.startsWith("http")) url else "https://$url"
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(full))) }
 }
 
 @Composable
-private fun rememberImageLoader(): ImageLoader {
+internal fun rememberImageLoader(): ImageLoader {
     val context = LocalContext.current
     // Wikimedia вимагає осмислений User-Agent, тож беремо спільний клієнт
     return remember { ImageLoader.Builder(context).okHttpClient { Api.client }.build() }
@@ -209,6 +209,7 @@ fun PlaceContent(
     inRoute: Boolean,
     loading: Boolean,
     onAdd: () -> Unit,
+    onMore: () -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -305,29 +306,22 @@ fun PlaceContent(
         }
     }
 
-    val link = detail?.pageUrl ?: place.website
     val canAdd = hasRoute && !inRoute
-    if (canAdd || link != null) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (canAdd) {
-                AppButton(
-                    text = stringResource(R.string.add_to_route),
-                    onClick = onAdd,
-                    enabled = !loading,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            if (link != null) {
-                AppButton(
-                    text = stringResource(
-                        if (place.category == Category.FOOD) R.string.open_website else R.string.open_wikipedia
-                    ),
-                    onClick = { openUrl(context, link) },
-                    kind = ButtonKind.OUTLINED,
-                    modifier = Modifier.weight(1f)
-                )
-            }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (canAdd) {
+            AppButton(
+                text = stringResource(R.string.add_to_route),
+                onClick = onAdd,
+                enabled = !loading,
+                modifier = Modifier.weight(1f)
+            )
         }
+        AppButton(
+            text = stringResource(R.string.info_more),
+            onClick = onMore,
+            kind = if (canAdd) ButtonKind.OUTLINED else ButtonKind.FILLED,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 

@@ -5,10 +5,13 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.cityguide.data.Api
+import com.cityguide.data.ArticleSection
 import com.cityguide.data.AroundResult
 import com.cityguide.data.Category
 import com.cityguide.data.City
+import com.cityguide.data.FactKind
 import com.cityguide.data.HttpException
+import com.cityguide.data.InfoFact
 import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
@@ -22,6 +25,8 @@ import com.cityguide.domain.RoutePlanner
 import com.cityguide.domain.RouteTracker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,6 +65,16 @@ data class NavState(
     val announcement: Announcement? = null
 )
 
+/** Екран докладної інформації про місце: стаття, фото, факти. */
+data class InfoState(
+    val place: Place,
+    val loading: Boolean = true,
+    val detail: PlaceDetail? = null,
+    val article: List<ArticleSection> = emptyList(),
+    val gallery: List<String> = emptyList(),
+    val facts: List<InfoFact> = emptyList()
+)
+
 data class UiState(
     val query: String = "",
     val loading: Boolean = false,
@@ -82,7 +97,8 @@ data class UiState(
     val route: Route? = null,
     val selected: Place? = null,
     val detail: PlaceDetail? = null,
-    val nav: NavState = NavState()
+    val nav: NavState = NavState(),
+    val info: InfoState? = null
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -230,6 +246,99 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { if (it.selected?.id == place.id) it.copy(detail = detail) else it }
             }
         }
+    }
+
+    // --- докладна інформація ---
+
+    private var infoJob: Job? = null
+
+    private fun yesNo(value: String): String = when (value) {
+        "yes" -> str(R.string.info_yes)
+        "no" -> str(R.string.info_no)
+        "limited" -> str(R.string.info_limited)
+        else -> value
+    }
+
+    /** Факти з тегів OSM (адреса, телефон, години, кухня тощо). */
+    private fun osmFacts(place: Place): List<InfoFact> {
+        val t = place.tags
+        val out = mutableListOf<InfoFact>()
+        fun add(kind: FactKind, value: String?) {
+            if (!value.isNullOrBlank()) out += InfoFact(kind, value)
+        }
+        val street = t["addr:street"]?.let { s -> t["addr:housenumber"]?.let { "$s $it" } ?: s }
+        add(FactKind.ADDRESS, listOfNotNull(street, t["addr:city"]).joinToString(", "))
+        add(FactKind.PHONE, t["phone"] ?: t["contact:phone"])
+        add(FactKind.EMAIL, t["email"] ?: t["contact:email"])
+        add(FactKind.HOURS, place.hours ?: t["opening_hours"])
+        add(
+            FactKind.CUISINE,
+            t["cuisine"]?.split(';')?.joinToString(", ") {
+                it.replace('_', ' ').trim().replaceFirstChar { c -> c.uppercase() }
+            }
+        )
+        add(FactKind.OUTDOOR, t["outdoor_seating"]?.let(::yesNo))
+        add(FactKind.TAKEAWAY, t["takeaway"]?.let(::yesNo))
+        add(FactKind.DELIVERY, t["delivery"]?.let(::yesNo))
+        add(FactKind.VEGETARIAN, t["diet:vegetarian"]?.let(::yesNo))
+        add(FactKind.WHEELCHAIR, t["wheelchair"]?.let(::yesNo))
+        add(FactKind.FEE, t["fee"]?.let(::yesNo))
+        add(FactKind.INCEPTION, t["start_date"])
+        add(FactKind.ARCHITECT, t["architect"])
+        add(FactKind.HEIGHT, t["height"]?.let { "$it m" })
+        return out
+    }
+
+    /** Відкриває екран докладної інформації: одразу з тим, що вже є, решта підвантажується. */
+    fun openInfo(place: Place) {
+        infoJob?.cancel()
+        val cached = detailCache[place.id]
+            ?: _state.value.detail?.takeIf { _state.value.selected?.id == place.id }
+        _state.update {
+            it.copy(info = InfoState(place = place, detail = cached, facts = osmFacts(place)))
+        }
+        infoJob = viewModelScope.launch {
+            val wikiLang = place.wikiLang ?: lang
+            val title = place.wikiTitle
+            val osm = osmFacts(place)
+            val (article, gallery, wikiFacts) = coroutineScope {
+                val a = async {
+                    if (title == null) emptyList<ArticleSection>()
+                    else runCatching { Api.fullArticle(wikiLang, title) }.getOrDefault(emptyList())
+                }
+                val g = async {
+                    if (title == null) emptyList<String>()
+                    else runCatching { Api.gallery(wikiLang, title) }.getOrDefault(emptyList())
+                }
+                val f = async {
+                    place.wikidataId?.let { id ->
+                        runCatching { Api.wikidataFacts(id, lang) }.getOrDefault(emptyList())
+                    } ?: emptyList<InfoFact>()
+                }
+                Triple(a.await(), g.await(), f.await())
+            }
+            val detail = cached ?: title?.let { Api.placeDetail(wikiLang, it) }
+            val known = osm.map { it.kind }.toSet()
+            val facts = osm + wikiFacts.filter { it.kind !in known }
+            _state.update { cur ->
+                val info = cur.info ?: return@update cur
+                if (info.place.id != place.id) return@update cur
+                cur.copy(
+                    info = info.copy(
+                        loading = false,
+                        detail = detail ?: info.detail,
+                        article = article,
+                        gallery = gallery,
+                        facts = facts
+                    )
+                )
+            }
+        }
+    }
+
+    fun closeInfo() {
+        infoJob?.cancel()
+        _state.update { it.copy(info = null) }
     }
 
     fun clearSelection() = _state.update { it.copy(selected = null, detail = null) }
@@ -500,6 +609,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Теги OSM, потрібні екрану докладної інформації (решту не зберігаємо). */
+    private fun keepTags(tags: Map<String, String>): Map<String, String> =
+        tags.filterKeys { it in INFO_TAG_KEYS }
+
     private fun toPlace(r: RawPlace, wiki: WikiInfo?): Place? {
         val name = wiki?.label ?: r.name ?: return null
         return Place(
@@ -513,21 +626,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             score = wiki?.sitelinks ?: 0,
             wikiTitle = wiki?.wikiTitle,
             wikiLang = wiki?.wikiLang,
-            website = r.tags["website"] ?: r.tags["contact:website"]
+            website = r.tags["website"] ?: r.tags["contact:website"],
+            hours = r.tags["opening_hours"],
+            tags = keepTags(r.tags)
         )
     }
 
     private fun toFood(r: RawPlace) = Place(
         id = r.id,
         wikidataId = null,
-        name = r.name ?: str(R.string.food_generic),
+        name = r.name ?: r.tags["brand"] ?: str(R.string.food_generic),
         description = RoutePlanner.foodDescription(getApplication<Application>(), r.tags),
         lat = r.lat,
         lon = r.lon,
         category = Category.FOOD,
         score = RoutePlanner.foodScore(r.tags),
         website = r.tags["website"] ?: r.tags["contact:website"],
-        hours = r.tags["opening_hours"]
+        hours = r.tags["opening_hours"],
+        tags = keepTags(r.tags)
     )
 
     /**
@@ -682,7 +798,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
-        const val MAX_FOOD = 120
+        const val MAX_FOOD = 600
+        val INFO_TAG_KEYS = setOf(
+            "opening_hours", "phone", "contact:phone", "email", "contact:email", "cuisine",
+            "outdoor_seating", "takeaway", "delivery", "diet:vegetarian", "wheelchair", "fee",
+            "addr:street", "addr:housenumber", "addr:city", "start_date", "architect", "height"
+        )
         const val QUICK_RADIUS_M = 1500
         const val FSQ_SCORE_BASE = 20
         const val MIN_WIKI_ONLY_SITELINKS = 4

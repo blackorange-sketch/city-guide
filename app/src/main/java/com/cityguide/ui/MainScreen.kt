@@ -4,6 +4,7 @@ package com.cityguide.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -78,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.cityguide.InfoState
 import com.cityguide.MainViewModel
 import com.cityguide.R
 import com.cityguide.Tts
@@ -215,6 +217,11 @@ fun MainScreen(
     selected?.let { placeKeep[0] = it }
     val routeKeep = remember { arrayOfNulls<Route>(1) }
     route?.let { routeKeep[0] = it }
+    val infoKeep = remember { arrayOfNulls<InfoState>(1) }
+    s.info?.let { infoKeep[0] = it }
+
+    // «Назад» закриває екран докладної інформації
+    BackHandler(enabled = s.info != null) { vm.closeInfo() }
 
     val panelKey = when {
         nav.active && route != null -> PanelKey(PanelKind.NAV)
@@ -439,6 +446,7 @@ fun MainScreen(
                                     inRoute = current?.stops?.any { it.id == place.id } == true,
                                     loading = s.loading,
                                     onAdd = { vm.addToRoute(place) },
+                                    onMore = { vm.openInfo(place) },
                                     onClose = vm::clearSelection
                                 )
                             }
@@ -450,6 +458,25 @@ fun MainScreen(
                         }
                     }
                 }
+            }
+        }
+
+        // --- екран докладної інформації поверх усього ---
+        AnimatedVisibility(
+            visible = s.info != null,
+            enter = slideInVertically(tween(380, easing = FastOutSlowInEasing)) { it / 3 } + fadeIn(tween(300)),
+            exit = slideOutVertically(tween(260)) { it / 3 } + fadeOut(tween(200))
+        ) {
+            val info = s.info ?: infoKeep[0]
+            if (info != null) {
+                val current = route ?: routeKeep[0]
+                InfoScreen(
+                    info = info,
+                    canAdd = route != null && current?.stops?.any { it.id == info.place.id } != true,
+                    loading = s.loading,
+                    onAdd = { vm.addToRoute(info.place) },
+                    onClose = vm::closeInfo
+                )
             }
         }
     }

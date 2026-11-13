@@ -139,8 +139,10 @@ object Api {
     private const val OVERPASS_TTL_MS = 24L * 60 * 60 * 1000
     private const val WIKI_TTL_MS = 14L * 24 * 60 * 60 * 1000
     private const val WIKI_CACHE_MAX = 8_000
-    private const val FOOD_RADIUS_MAX_M = 3_000
-    private val FOOD_AMENITIES = setOf("restaurant", "cafe", "fast_food", "pub", "bar", "ice_cream")
+    private const val FOOD_RADIUS_MAX_M = 5_000
+    private val FOOD_AMENITIES = setOf(
+        "restaurant", "cafe", "fast_food", "pub", "bar", "ice_cream", "food_court", "biergarten"
+    )
 
     private var cacheDir: File? = null
 
@@ -369,10 +371,11 @@ object Api {
             }
             val limit = if (extended) 500 else 300
             val query = "[out:json][timeout:25];(" + clauses.joinToString("") + ")->.s;" +
-                "nwr[\"amenity\"~\"^(restaurant|cafe|fast_food|pub|bar|ice_cream)\$\"][\"name\"]$foodAround->.f;" +
-                ".s out center tags $limit;.f out center tags 400;"
+                "nwr[\"amenity\"~\"^(restaurant|cafe|fast_food|pub|bar|ice_cream|food_court|biergarten)\$\"]" +
+                "[~\"^(name|brand)\$\"~\".\"]$foodAround->.f;" +
+                ".s out center tags $limit;.f out center tags 1500;"
 
-            val key = String.format(Locale.US, "v2_%.3f_%.3f_%d_%b", city.lat, city.lon, radiusM, extended)
+            val key = String.format(Locale.US, "v3_%.3f_%.3f_%d_%b", city.lat, city.lon, radiusM, extended)
             val (foods, sights) = parseElements(overpass(query, key))
                 .partition { it.tags["amenity"] in FOOD_AMENITIES }
             AroundResult(sights = sights, foods = foods)
@@ -451,6 +454,154 @@ object Api {
     }
 
     const val WIKI_ONLY_TAG = "_wiki_only"
+
+    // --- докладна інформація: стаття, фото, факти ---
+
+    // Службові розділи статей, які не потрібні в застосунку (різними мовами)
+    private val SKIP_SECTIONS = setOf(
+        "see also", "references", "external links", "notes", "further reading", "bibliography", "sources",
+        "дивись також", "примітки", "посилання", "література", "джерела", "виноски",
+        "zobacz też", "przypisy", "linki zewnętrzne", "bibliografia", "uwagi",
+        "siehe auch", "einzelnachweise", "weblinks", "literatur", "anmerkungen", "quellen"
+    )
+    private val HEADING = Regex("^(={2,6})\\s*(.+?)\\s*\\1\\s*$")
+    private const val ARTICLE_MAX_CHARS = 40_000
+
+    /** Повний текст статті Вікіпедії, розбитий за розділами (без довідкових розділів). */
+    suspend fun fullArticle(wikiLang: String, title: String): List<ArticleSection> =
+        withContext(Dispatchers.IO) {
+            val url = "https://$wikiLang.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
+                .addQueryParameter("action", "query")
+                .addQueryParameter("format", "json")
+                .addQueryParameter("formatversion", "2")
+                .addQueryParameter("prop", "extracts")
+                .addQueryParameter("explaintext", "1")
+                .addQueryParameter("exsectionformat", "wiki")
+                .addQueryParameter("redirects", "1")
+                .addQueryParameter("titles", title)
+                .build()
+            val page = execute(Request.Builder().url(url).build())
+                .jsonObject["query"]?.jsonObject?.get("pages")?.jsonArray?.firstOrNull()?.jsonObject
+            val text = page?.get("extract")?.jsonPrimitive?.contentOrNull ?: return@withContext emptyList()
+            parseSections(text.take(ARTICLE_MAX_CHARS))
+        }
+
+    private fun parseSections(text: String): List<ArticleSection> {
+        val result = mutableListOf<ArticleSection>()
+        var title: String? = null
+        var skipping = false
+        val buffer = StringBuilder()
+        fun flush() {
+            val body = buffer.toString().trim()
+            if (body.isNotEmpty() && !skipping) result += ArticleSection(title, body)
+            buffer.clear()
+        }
+        for (line in text.lines()) {
+            val m = HEADING.matchEntire(line.trim())
+            if (m != null) {
+                flush()
+                val heading = m.groupValues[2]
+                title = heading
+                skipping = heading.lowercase() in SKIP_SECTIONS
+            } else {
+                buffer.appendLine(line)
+            }
+        }
+        flush()
+        return result.map { it.copy(text = it.text.replace(Regex("\n{3,}"), "\n\n")) }
+    }
+
+    private val GALLERY_EXCLUDE = Regex(
+        "icon|logo|flag|symbol|map|commons|wikidata|button|ambox|blank|coa_|coat|locator|sign|diagram|plan|stub|edit|question|disambig",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Мініатюри фото зі статті Вікіпедії (Wikimedia Commons), без значків і схем. */
+    suspend fun gallery(wikiLang: String, title: String): List<String> = withContext(Dispatchers.IO) {
+        val url = "https://$wikiLang.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
+            .addQueryParameter("action", "query")
+            .addQueryParameter("format", "json")
+            .addQueryParameter("formatversion", "2")
+            .addQueryParameter("generator", "images")
+            .addQueryParameter("gimlimit", "40")
+            .addQueryParameter("titles", title)
+            .addQueryParameter("prop", "imageinfo")
+            .addQueryParameter("iiprop", "url|mime")
+            .addQueryParameter("iiurlwidth", "720")
+            .build()
+        val pages = execute(Request.Builder().url(url).build())
+            .jsonObject["query"]?.jsonObject?.get("pages")?.jsonArray.orEmpty()
+        pages.mapNotNull { p ->
+            val o = p.jsonObject
+            val name = o["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (GALLERY_EXCLUDE.containsMatchIn(name)) return@mapNotNull null
+            val info = o["imageinfo"]?.jsonArray?.firstOrNull()?.jsonObject ?: return@mapNotNull null
+            val mime = info["mime"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (mime != "image/jpeg" && mime != "image/png" && mime != "image/webp") return@mapNotNull null
+            info["thumburl"]?.jsonPrimitive?.contentOrNull ?: info["url"]?.jsonPrimitive?.contentOrNull
+        }.take(12)
+    }
+
+    private fun JsonObject.claimValues(pid: String): List<JsonObject> =
+        (this["claims"] as? JsonObject)?.get(pid)?.jsonArray.orEmpty().mapNotNull {
+            (((it.jsonObject["mainsnak"] as? JsonObject)?.get("datavalue") as? JsonObject)
+                ?.get("value")) as? JsonObject
+        }
+
+    /** Факти з Wikidata: рік побудови, архітектор, стиль, статус пам'ятки, висота. */
+    suspend fun wikidataFacts(qid: String, lang: String): List<InfoFact> = withContext(Dispatchers.IO) {
+        val url = "https://www.wikidata.org/w/api.php".toHttpUrl().newBuilder()
+            .addQueryParameter("action", "wbgetentities")
+            .addQueryParameter("ids", qid)
+            .addQueryParameter("props", "claims")
+            .addQueryParameter("format", "json")
+            .build()
+        val entity = (execute(Request.Builder().url(url).build())
+            .jsonObject["entities"] as? JsonObject)?.get(qid) as? JsonObject
+            ?: return@withContext emptyList()
+
+        val facts = mutableListOf<InfoFact>()
+        entity.claimValues("P571").firstOrNull()?.get("time")?.jsonPrimitive?.contentOrNull?.let { time ->
+            Regex("^\\+?(\\d{1,4})-").find(time)?.groupValues?.get(1)?.toIntOrNull()?.let {
+                if (it > 0) facts += InfoFact(FactKind.INCEPTION, it.toString())
+            }
+        }
+        entity.claimValues("P2048").firstOrNull()?.get("amount")?.jsonPrimitive?.contentOrNull?.let {
+            it.toDoubleOrNull()?.let { h -> facts += InfoFact(FactKind.HEIGHT, "%.0f m".format(h)) }
+        }
+
+        val linked = listOf(
+            FactKind.ARCHITECT to "P84",
+            FactKind.STYLE to "P149",
+            FactKind.HERITAGE to "P1435"
+        ).associate { (kind, pid) ->
+            kind to entity.claimValues(pid)
+                .mapNotNull { it["id"]?.jsonPrimitive?.contentOrNull }
+                .distinct().take(3)
+        }
+        val ids = linked.values.flatten().distinct()
+        if (ids.isNotEmpty()) {
+            val labels = runCatching {
+                val labelUrl = "https://www.wikidata.org/w/api.php".toHttpUrl().newBuilder()
+                    .addQueryParameter("action", "wbgetentities")
+                    .addQueryParameter("ids", ids.joinToString("|"))
+                    .addQueryParameter("props", "labels")
+                    .addQueryParameter("languages", "$lang|en")
+                    .addQueryParameter("format", "json")
+                    .build()
+                val entities = execute(Request.Builder().url(labelUrl).build())
+                    .jsonObject["entities"] as? JsonObject
+                ids.associateWith { id ->
+                    (entities?.get(id) as? JsonObject)?.localized("labels", lang)
+                }
+            }.getOrDefault(emptyMap())
+            for ((kind, list) in linked) {
+                val names = list.mapNotNull { labels[it] }
+                if (names.isNotEmpty()) facts += InfoFact(kind, names.joinToString(", "))
+            }
+        }
+        facts
+    }
 
     // --- рейтинги закладів (Foursquare через проксі) ---
 
