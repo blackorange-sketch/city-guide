@@ -95,7 +95,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Текст помилки для користувача: власні помилки вже локалізовані, мережеві перекладаємо тут. */
     private fun errorText(e: Exception): String = when (e) {
         is HttpException -> str(R.string.err_http, e.code, e.host)
-        is IOException -> str(R.string.err_network)
+        is IOException -> str(R.string.err_network) +
+            "\n(${e.javaClass.simpleName}: ${e.message.orEmpty().take(90)})"
         else -> e.message ?: str(R.string.err_network)
     }
 
@@ -543,13 +544,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val extended = _state.value.extended
         val limit = if (extended) MAX_PLACES_EXTENDED else MAX_PLACES
-        val around = Api.fetchAround(city, radiusM(), extended)
-        if (around.sights.isEmpty()) {
-            error(str(R.string.err_no_places))
-        }
+        val around = Api.fetchAround(city, radiusM(), extended, lang)
 
         val foods = around.foods.map { toFood(it) }.sortedByDescending { it.score }.take(MAX_FOOD)
-        val preliminary = around.sights.mapNotNull { toPlace(it, null) }.take(limit)
+        // Попередній список без місць з Вікіпедії, чия значущість ще невідома
+        val preliminary = around.sights
+            .filter { it.tags[Api.WIKI_ONLY_TAG] == null }
+            .mapNotNull { toPlace(it, null) }.take(limit)
         _state.update {
             it.copy(places = preliminary, foods = foods, status = str(R.string.status_scoring))
         }
@@ -561,10 +562,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             emptyMap()
         }
-        val places = around.sights.mapNotNull { toPlace(it, it.wikidataId?.let { id -> info[id] }) }
+        val places = around.sights
+            // Місця лише з геопошуку Вікіпедії беремо, якщо вони достатньо відомі
+            .filter { r ->
+                r.tags[Api.WIKI_ONLY_TAG] == null ||
+                    (r.wikidataId?.let { info[it]?.sitelinks } ?: 0) >= MIN_WIKI_ONLY_SITELINKS
+            }
+            .mapNotNull { toPlace(it, it.wikidataId?.let { id -> info[id] }) }
             .sortedByDescending { it.score }
             .take(limit)
-        _state.update { it.copy(places = places, status = null) }
+        if (places.isEmpty()) error(str(R.string.err_no_places))
+        _state.update {
+            it.copy(
+                places = places,
+                status = null,
+                error = if (around.foodsUnavailable) str(R.string.err_food_unavailable) else it.error
+            )
+        }
     }
 
     private fun launchLoading(status: String, block: suspend () -> Unit) {
@@ -589,6 +603,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 120
+        const val MIN_WIKI_ONLY_SITELINKS = 4
         const val ARRIVE_RADIUS_M = 35.0
         const val ANNOUNCE_DISTANCE_M = 150.0
         const val OFF_ROUTE_M = 50.0

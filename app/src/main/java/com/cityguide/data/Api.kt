@@ -10,6 +10,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -63,7 +65,12 @@ data class WikiInfo(
 )
 
 /** Результат одного запиту: визначні місця й заклади харчування. */
-data class AroundResult(val sights: List<RawPlace>, val foods: List<RawPlace>)
+data class AroundResult(
+    val sights: List<RawPlace>,
+    val foods: List<RawPlace>,
+    /** Заклади не вдалося завантажити (Overpass недоступний), але місця з Вікіпедії є. */
+    val foodsUnavailable: Boolean = false
+)
 
 data class RouteResult(
     val geometry: List<LatLon>,
@@ -100,10 +107,14 @@ object Api {
     // Публічні Overpass-сервери часто перевантажені (502/504), тож опитуємо кілька дзеркал
     private val OVERPASS_ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
+        "https://lz4.overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
-        "https://overpass.private.coffee/api/interpreter"
+        "https://overpass.private.coffee/api/interpreter",
+        "https://overpass.openstreetmap.fr/api/interpreter",
+        "https://z.overpass-api.de/api/interpreter"
     )
-    private const val MIRROR_STAGGER_MS = 3_000L
+    private const val MIRROR_STAGGER_MS = 2_000L
+    private const val OVERPASS_TOTAL_TIMEOUT_MS = 30_000L
     private const val OVERPASS_TTL_MS = 24L * 60 * 60 * 1000
     private const val WIKI_TTL_MS = 14L * 24 * 60 * 60 * 1000
     private const val WIKI_CACHE_MAX = 8_000
@@ -191,15 +202,26 @@ object Api {
                 file.delete()
             }
         }
-        val text = firstSuccess(
-            MIRROR_STAGGER_MS,
-            OVERPASS_ENDPOINTS.map { endpoint ->
-                suspend {
-                    val body = FormBody.Builder().add("data", query).build()
-                    executeText(Request.Builder().url(endpoint).post(body).build())
-                }
+        val text = try {
+            withTimeout(OVERPASS_TOTAL_TIMEOUT_MS) {
+                firstSuccess(
+                    MIRROR_STAGGER_MS,
+                    OVERPASS_ENDPOINTS.map { endpoint ->
+                        suspend {
+                            val body = FormBody.Builder().add("data", query).build()
+                            executeText(Request.Builder().url(endpoint).post(body).build())
+                        }
+                    }
+                )
             }
-        )
+        } catch (e: TimeoutCancellationException) {
+            val stale = file?.takeIf { it.exists() }?.let { runCatching { it.readText() }.getOrNull() }
+            stale ?: throw IOException("Overpass timeout")
+        } catch (e: IOException) {
+            // Сервери недоступні: краще застарілі дані з кешу, ніж помилка
+            val stale = file?.takeIf { it.exists() }?.let { runCatching { it.readText() }.getOrNull() }
+            stale ?: throw e
+        }
         val root = Json.parseToJsonElement(text).jsonObject
         // Відповідь із "remark" означає таймаут або обрізані дані: не кешуємо
         if (root["remark"] == null) runCatching { file?.writeText(text) }
@@ -310,7 +332,7 @@ object Api {
      * Один запит на все: визначні місця (з тегом wikidata; у розширеному режимі ще й іменовані
      * атракції, замки, пам'ятники) та заклади харчування (до 3 км від центру).
      */
-    suspend fun fetchAround(city: City, radiusM: Int, extended: Boolean): AroundResult =
+    private suspend fun overpassAround(city: City, radiusM: Int, extended: Boolean): AroundResult =
         withContext(Dispatchers.IO) {
             val around = "(around:$radiusM,${city.lat},${city.lon})"
             val foodAround = "(around:${min(radiusM, FOOD_RADIUS_MAX_M)},${city.lat},${city.lon})"
@@ -325,7 +347,7 @@ object Api {
                 clauses += "nwr[\"name\"][\"historic\"~\"^(castle|monument|memorial|ruins|fort|archaeological_site|city_gate|manor)\$\"]$around;"
             }
             val limit = if (extended) 500 else 300
-            val query = "[out:json][timeout:30];(" + clauses.joinToString("") + ")->.s;" +
+            val query = "[out:json][timeout:25];(" + clauses.joinToString("") + ")->.s;" +
                 "nwr[\"amenity\"~\"^(restaurant|cafe|fast_food|pub|bar|ice_cream)\$\"][\"name\"]$foodAround->.f;" +
                 ".s out center tags $limit;.f out center tags 400;"
 
@@ -334,6 +356,80 @@ object Api {
                 .partition { it.tags["amenity"] in FOOD_AMENITIES }
             AroundResult(sights = sights, foods = foods)
         }
+
+    /**
+     * Геопошук статей Вікіпедії навколо точки: швидке й стабільне друге джерело визначних місць.
+     * Одразу дає Wikidata-id, тож додатковий запит за значущістю не потрібен для пошуку.
+     */
+    private suspend fun wikiGeosearch(city: City, radiusM: Int, wikiLang: String): List<RawPlace> =
+        withContext(Dispatchers.IO) {
+            val url = "https://$wikiLang.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
+                .addQueryParameter("action", "query")
+                .addQueryParameter("format", "json")
+                .addQueryParameter("formatversion", "2")
+                .addQueryParameter("generator", "geosearch")
+                .addQueryParameter("ggscoord", "${city.lat}|${city.lon}")
+                .addQueryParameter("ggsradius", min(radiusM, 10_000).toString())
+                .addQueryParameter("ggslimit", "150")
+                .addQueryParameter("prop", "coordinates|pageprops")
+                .addQueryParameter("ppprop", "wikibase_item")
+                .addQueryParameter("colimit", "150")
+                .build()
+            val pages = execute(Request.Builder().url(url).build())
+                .jsonObject["query"]?.jsonObject?.get("pages")?.jsonArray.orEmpty()
+            pages.mapNotNull { page ->
+                val o = page.jsonObject
+                val title = o["title"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val qid = (o["pageprops"] as? JsonObject)?.get("wikibase_item")
+                    ?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val coord = o["coordinates"]?.jsonArray?.firstOrNull()?.jsonObject
+                    ?: return@mapNotNull null
+                val lat = coord["lat"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+                val lon = coord["lon"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+                RawPlace(
+                    id = "wd/$qid",
+                    wikidataId = qid,
+                    name = title,
+                    lat = lat,
+                    lon = lon,
+                    // Позначка джерела: такі місця беремо лише якщо вони достатньо відомі
+                    tags = mapOf(WIKI_ONLY_TAG to "1")
+                )
+            }
+        }
+
+    /**
+     * Місця й заклади з двох незалежних джерел: Overpass (категорії, заклади) і геопошук Вікіпедії.
+     * Достатньо, щоб відповіло хоч одне з них.
+     */
+    suspend fun fetchAround(
+        city: City,
+        radiusM: Int,
+        extended: Boolean,
+        lang: String
+    ): AroundResult = coroutineScope {
+        val overpass = async { runCatching { overpassAround(city, radiusM, extended) } }
+        val wikiLangs = listOf(lang, "en").distinct()
+        val wikis = wikiLangs.map { l -> async { runCatching { wikiGeosearch(city, radiusM, l) } } }
+
+        val ov = overpass.await()
+        val wikiResults = wikis.map { it.await() }
+        val wikiPlaces = wikiResults.flatMap { it.getOrNull().orEmpty() }
+
+        if (ov.isFailure && wikiResults.all { it.isFailure }) {
+            throw ov.exceptionOrNull() ?: IOException("No data")
+        }
+        val sights = ov.getOrNull()?.sights.orEmpty()
+        val known = sights.mapNotNull { it.wikidataId }.toSet()
+        val merged = sights + wikiPlaces.filter { it.wikidataId !in known }.distinctBy { it.wikidataId }
+        AroundResult(
+            sights = merged,
+            foods = ov.getOrNull()?.foods.orEmpty(),
+            foodsUnavailable = ov.isFailure
+        )
+    }
+
+    const val WIKI_ONLY_TAG = "_wiki_only"
 
     // --- Wikidata / Wikipedia ---
 

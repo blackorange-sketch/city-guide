@@ -32,6 +32,7 @@
     <string name="err_route_too_short">Trasa jest zbyt krótka do nawigacji</string>
     <string name="err_min_stops">Trasa musi mieć co najmniej 2 przystanki</string>
     <string name="err_network">Błąd sieci. Sprawdź połączenie i spróbuj ponownie.</string>
+    <string name="err_food_unavailable">Nie udało się wczytać lokali (serwer zajęty). Pokazano tylko miejsca.</string>
     <string name="err_http">Błąd serwera %1$d (%2$s)</string>
     <string name="my_location_name">Moja lokalizacja</string>
     <string name="nav_started">Nawigacja rozpoczęta</string>

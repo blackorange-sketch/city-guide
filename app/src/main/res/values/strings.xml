@@ -32,6 +32,7 @@
     <string name="err_route_too_short">The route is too short to navigate</string>
     <string name="err_min_stops">A route needs at least 2 stops</string>
     <string name="err_network">Network error. Check your connection and try again.</string>
+    <string name="err_food_unavailable">Eateries could not be loaded (server busy). Showing places only.</string>
     <string name="err_http">Server error %1$d from %2$s</string>
     <string name="my_location_name">My location</string>
     <string name="nav_started">Navigation started</string>

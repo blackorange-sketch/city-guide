@@ -32,6 +32,7 @@
     <string name="err_route_too_short">Маршрут занадто короткий для навігації</string>
     <string name="err_min_stops">У маршруті має лишатися щонайменше 2 зупинки</string>
     <string name="err_network">Помилка мережі. Перевірте з\'єднання й спробуйте ще раз</string>
+    <string name="err_food_unavailable">Заклади не вдалося завантажити (сервер зайнятий). Показано лише місця.</string>
     <string name="err_http">Помилка %1$d від %2$s</string>
     <string name="my_location_name">Моє місцезнаходження</string>
     <string name="nav_started">Навігацію розпочато</string>

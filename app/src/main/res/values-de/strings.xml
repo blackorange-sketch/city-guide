@@ -32,6 +32,7 @@
     <string name="err_route_too_short">Die Route ist zu kurz für die Navigation</string>
     <string name="err_min_stops">Eine Route braucht mindestens 2 Stopps</string>
     <string name="err_network">Netzwerkfehler. Prüfen Sie die Verbindung und versuchen Sie es erneut.</string>
+    <string name="err_food_unavailable">Lokale konnten nicht geladen werden (Server ausgelastet). Es werden nur Orte angezeigt.</string>
     <string name="err_http">Serverfehler %1$d von %2$s</string>
     <string name="my_location_name">Mein Standort</string>
     <string name="nav_started">Navigation gestartet</string>
