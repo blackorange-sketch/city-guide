@@ -65,6 +65,9 @@ dependencies {
     // Карта (OpenStreetMap-дані, без ключів)
     implementation("org.maplibre.gl:android-sdk:11.5.2")
 
+    // Фото місць
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     // Мережа та JSON
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")

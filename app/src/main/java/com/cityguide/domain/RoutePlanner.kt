@@ -31,8 +31,48 @@ object RoutePlanner {
         tags["tourism"] == "viewpoint" -> Category.VIEWS
         tags["amenity"] == "place_of_worship" -> Category.RELIGION
         tags.containsKey("historic") -> Category.HISTORY
+        tags["leisure"] in setOf("park", "garden", "nature_reserve") -> Category.PARK
         else -> Category.OTHER
     }
+
+    // --- заклади харчування ---
+
+    private val FOOD_TYPES = mapOf(
+        "cafe" to "Кафе",
+        "restaurant" to "Ресторан",
+        "fast_food" to "Фастфуд",
+        "pub" to "Паб",
+        "bar" to "Бар",
+        "ice_cream" to "Морозиво"
+    )
+
+    private val USEFUL_FOOD_TAGS = listOf(
+        "cuisine", "opening_hours", "website", "contact:website", "phone", "contact:phone",
+        "diet:vegetarian", "outdoor_seating", "wheelchair", "takeaway", "delivery"
+    )
+
+    /** Рейтингів у OSM немає, тож "якість" заклади оцінюємо за повнотою даних про них. */
+    fun foodScore(tags: Map<String, String>): Int = USEFUL_FOOD_TAGS.count { tags.containsKey(it) }
+
+    fun foodDescription(tags: Map<String, String>): String {
+        val type = FOOD_TYPES[tags["amenity"]] ?: "Заклад"
+        val cuisine = tags["cuisine"]?.split(';')?.firstOrNull()?.replace('_', ' ')?.trim()
+        return if (cuisine.isNullOrEmpty()) type else "$type · $cuisine"
+    }
+
+    /** Найкращий заклад біля середини маршруту: до 600 м, спершу з повнішими даними, потім найближчий. */
+    fun lunchCandidate(stops: List<Place>, foods: List<Place>): Place? {
+        if (stops.isEmpty()) return null
+        val mid = stops[(stops.size - 1) / 2]
+        return foods
+            .filter { f -> stops.none { it.id == f.id } }
+            .map { it to Geo.distance(mid.pos, it.pos) }
+            .filter { it.second <= 600.0 }
+            .sortedWith(compareByDescending<Pair<Place, Double>> { it.first.score }.thenBy { it.second })
+            .firstOrNull()?.first
+    }
+
+    // --- підбір і порядок ---
 
     /** Найзначущіші місця обраних категорій (порожній набір = усі категорії). */
     fun pick(places: List<Place>, categories: Set<Category>, count: Int): List<Place> =
@@ -54,6 +94,28 @@ object RoutePlanner {
             current = next.pos
         }
         return twoOpt(path)
+    }
+
+    /** Додає місце в позицію, що найменше подовжує маршрут. */
+    fun insertBest(stops: List<Place>, place: Place): List<Place> {
+        if (stops.size < 2) return stops + place
+        var bestIndex = stops.size
+        var bestCost = Geo.distance(stops.last().pos, place.pos)
+        val startCost = Geo.distance(place.pos, stops.first().pos)
+        if (startCost < bestCost) {
+            bestCost = startCost
+            bestIndex = 0
+        }
+        for (i in 1 until stops.size) {
+            val cost = Geo.distance(stops[i - 1].pos, place.pos) +
+                Geo.distance(place.pos, stops[i].pos) -
+                Geo.distance(stops[i - 1].pos, stops[i].pos)
+            if (cost < bestCost) {
+                bestCost = cost
+                bestIndex = i
+            }
+        }
+        return stops.toMutableList().apply { add(bestIndex, place) }
     }
 
     private fun twoOpt(path: MutableList<Place>): List<Place> {

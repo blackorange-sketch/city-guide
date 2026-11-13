@@ -44,6 +44,7 @@ import kotlin.math.hypot
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 private const val ROUTE_SRC = "route-src"
 private const val PLACES_SRC = "places-src"
+private const val FOOD_SRC = "food-src"
 private const val STOPS_SRC = "stops-src"
 private const val SELECTED_SRC = "selected-src"
 private const val EMPTY_FC = """{"type":"FeatureCollection","features":[]}"""
@@ -52,6 +53,7 @@ private const val EMPTY_FC = """{"type":"FeatureCollection","features":[]}"""
 fun MapPane(
     city: City?,
     places: List<Place>,
+    foods: List<Place>,
     route: Route?,
     selected: Place?,
     topPaddingPx: Int,
@@ -68,7 +70,7 @@ fun MapPane(
     }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleReady by remember { mutableStateOf(false) }
-    val latestPlaces by rememberUpdatedState(places)
+    val latestPlaces by rememberUpdatedState(places + foods)
     val latestOnClick by rememberUpdatedState(onPlaceClick)
 
     DisposableEffect(lifecycle, mapView) {
@@ -114,6 +116,7 @@ fun MapPane(
             m.setStyle(STYLE_URL) { style ->
                 style.addSource(GeoJsonSource(ROUTE_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(PLACES_SRC, EMPTY_FC))
+                style.addSource(GeoJsonSource(FOOD_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(STOPS_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(SELECTED_SRC, EMPTY_FC))
 
@@ -129,6 +132,15 @@ fun MapPane(
                 style.addLayer(
                     CircleLayer("places-layer", PLACES_SRC).withProperties(
                         PropertyFactory.circleRadius(7f),
+                        PropertyFactory.circleColor(Expression.get("color")),
+                        PropertyFactory.circleStrokeColor(Color.WHITE),
+                        PropertyFactory.circleStrokeWidth(2f)
+                    )
+                )
+                // Заклади харчування: менші маркери
+                style.addLayer(
+                    CircleLayer("food-layer", FOOD_SRC).withProperties(
+                        PropertyFactory.circleRadius(5.5f),
                         PropertyFactory.circleColor(Expression.get("color")),
                         PropertyFactory.circleStrokeColor(Color.WHITE),
                         PropertyFactory.circleStrokeWidth(2f)
@@ -174,6 +186,19 @@ fun MapPane(
                         PropertyFactory.textOptional(true)
                     ).apply { setMinZoom(14f) }
                 )
+                style.addLayer(
+                    SymbolLayer("food-labels-layer", FOOD_SRC).withProperties(
+                        PropertyFactory.textField(Expression.get("name")),
+                        PropertyFactory.textSize(11f),
+                        PropertyFactory.textColor(Color.parseColor("#5D4037")),
+                        PropertyFactory.textHaloColor(Color.WHITE),
+                        PropertyFactory.textHaloWidth(1.6f),
+                        PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                        PropertyFactory.textOffset(arrayOf(0f, 0.8f)),
+                        PropertyFactory.textOptional(true)
+                    ).apply { setMinZoom(15f) }
+                )
                 map = m
                 styleReady = true
             }
@@ -190,9 +215,10 @@ fun MapPane(
     }
 
     // Дані на карті
-    LaunchedEffect(styleReady, places, route, selected) {
+    LaunchedEffect(styleReady, places, foods, route, selected) {
         val style = map?.style ?: return@LaunchedEffect
         style.getSourceAs<GeoJsonSource>(PLACES_SRC)?.setGeoJson(placesJson(places))
+        style.getSourceAs<GeoJsonSource>(FOOD_SRC)?.setGeoJson(placesJson(foods))
         style.getSourceAs<GeoJsonSource>(ROUTE_SRC)?.setGeoJson(routeJson(route))
         style.getSourceAs<GeoJsonSource>(STOPS_SRC)?.setGeoJson(stopsJson(route))
         style.getSourceAs<GeoJsonSource>(SELECTED_SRC)?.setGeoJson(selectedJson(selected))
