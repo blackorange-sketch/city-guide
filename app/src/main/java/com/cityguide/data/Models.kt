@@ -6,12 +6,12 @@ data class City(val name: String, val lat: Double, val lon: Double) {
     val pos: LatLon get() = LatLon(lat, lon)
 }
 
-enum class Category(val label: String) {
-    HISTORY("Історія"),
-    MUSEUMS("Музеї"),
-    VIEWS("Краєвиди"),
-    RELIGION("Храми"),
-    OTHER("Інше")
+enum class Category(val label: String, val color: String) {
+    HISTORY("Історія", "#8D6E63"),
+    MUSEUMS("Музеї", "#5E35B1"),
+    VIEWS("Краєвиди", "#039BE5"),
+    RELIGION("Храми", "#FB8C00"),
+    OTHER("Інше", "#E53935")
 }
 
 data class Place(

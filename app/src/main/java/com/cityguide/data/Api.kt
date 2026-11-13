@@ -31,6 +31,8 @@ data class WikiInfo(val label: String?, val description: String?, val sitelinks:
 
 data class RouteResult(val geometry: List<LatLon>, val distance: Double, val duration: Double)
 
+data class Suggestion(val name: String, val subtitle: String, val lat: Double, val lon: Double)
+
 /**
  * Усі джерела безкоштовні й без ключів:
  * Nominatim (геокодування), Overpass (місця OSM), Wikidata (значущість і описи),
@@ -50,6 +52,13 @@ object Api {
             )
         }
         .build()
+
+    // Публічні Overpass-сервери часто перевантажені (502/504), тож пробуємо кілька дзеркал
+    private val OVERPASS_ENDPOINTS = listOf(
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter"
+    )
 
     private fun execute(request: Request): JsonElement =
         client.newCall(request).execute().use { resp ->
@@ -74,6 +83,55 @@ object Api {
         )
     }
 
+    /** Підказки назв міст під час введення (Photon, розрахований на автодоповнення). */
+    suspend fun suggest(query: String): List<Suggestion> = withContext(Dispatchers.IO) {
+        val url = "https://photon.komoot.io/api/".toHttpUrl().newBuilder()
+            .addQueryParameter("q", query)
+            .addQueryParameter("limit", "6")
+            .addQueryParameter("osm_tag", "place:city")
+            .addQueryParameter("osm_tag", "place:town")
+            .addQueryParameter("osm_tag", "place:village")
+            .build()
+        val features = execute(Request.Builder().url(url).build())
+            .jsonObject["features"]?.jsonArray.orEmpty()
+        features.mapNotNull { f ->
+            val o = f.jsonObject
+            val props = o["properties"] as? JsonObject ?: return@mapNotNull null
+            val name = props["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val coords = o["geometry"]?.jsonObject?.get("coordinates")?.jsonArray
+                ?: return@mapNotNull null
+            val subtitle = listOf("state", "country")
+                .mapNotNull { props[it]?.jsonPrimitive?.contentOrNull }
+                .joinToString(", ")
+            Suggestion(
+                name = name,
+                subtitle = subtitle,
+                lat = coords[1].jsonPrimitive.double,
+                lon = coords[0].jsonPrimitive.double
+            )
+        }.distinctBy { it.name + it.subtitle }
+    }
+
+    /** Назва населеного пункту за координатами (best-effort). */
+    suspend fun reverse(lat: Double, lon: Double, lang: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val url = "https://nominatim.openstreetmap.org/reverse".toHttpUrl().newBuilder()
+                .addQueryParameter("lat", lat.toString())
+                .addQueryParameter("lon", lon.toString())
+                .addQueryParameter("format", "jsonv2")
+                .addQueryParameter("zoom", "10")
+                .addQueryParameter("accept-language", lang)
+                .build()
+            val o = execute(Request.Builder().url(url).build()).jsonObject
+            val address = o["address"] as? JsonObject
+            listOf("city", "town", "village", "municipality")
+                .firstNotNullOfOrNull { address?.get(it)?.jsonPrimitive?.contentOrNull }
+                ?: o["name"]?.jsonPrimitive?.contentOrNull
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     suspend fun fetchPlaces(city: City, radiusM: Int): List<RawPlace> = withContext(Dispatchers.IO) {
         val around = "(around:$radiusM,${city.lat},${city.lon})"
         // Беремо лише об'єкти з тегом wikidata: це відсікає лавки, таблички та іншу дрібницю.
@@ -87,12 +145,17 @@ object Api {
             out center tags 300;
         """.trimIndent()
 
-        val body = FormBody.Builder().add("data", query).build()
-        val request = Request.Builder()
-            .url("https://overpass-api.de/api/interpreter")
-            .post(body)
-            .build()
-        val root = execute(request).jsonObject
+        var root: JsonObject? = null
+        for (endpoint in OVERPASS_ENDPOINTS) {
+            try {
+                val body = FormBody.Builder().add("data", query).build()
+                root = execute(Request.Builder().url(endpoint).post(body).build()).jsonObject
+                break
+            } catch (e: Exception) {
+                // пробуємо наступне дзеркало
+            }
+        }
+        if (root == null) error("Сервери карт перевантажені. Спробуйте ще раз за хвилину")
 
         root["elements"]?.jsonArray.orEmpty().mapNotNull { element ->
             val o = element.jsonObject
