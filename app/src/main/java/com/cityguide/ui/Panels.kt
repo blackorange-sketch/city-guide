@@ -78,6 +78,7 @@ import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
 import com.cityguide.data.Route
+import com.cityguide.data.SavedRoute
 import com.cityguide.data.TransitLeg
 import kotlin.math.roundToInt
 
@@ -127,6 +128,88 @@ internal fun rememberImageLoader(): ImageLoader {
 }
 
 // --- стартова підказка ---
+
+private val START_CITIES = listOf("Warszawa", "Kraków", "Lviv", "Praha", "Wien", "Roma", "Berlin", "Paris", "London")
+
+/** Стартова панель: привітання, швидкі дії, приклади міст і збережені маршрути. */
+@Composable
+fun StartContent(
+    status: String?,
+    saved: List<SavedRoute>,
+    onCity: (String) -> Unit,
+    onLocate: () -> Unit,
+    onPhoto: () -> Unit,
+    onOpenSaved: (String) -> Unit,
+    onDeleteSaved: (String) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(26.dp))
+            .background(Brush.linearGradient(listOf(colors.primaryContainer, colors.tertiaryContainer)))
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) { HintContent(status) }
+
+    if (status == null) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            AppButton(
+                text = "📍 " + stringResource(R.string.my_location_name),
+                onClick = onLocate,
+                modifier = Modifier.weight(1f)
+            )
+            AppButton(
+                text = "📷 " + stringResource(R.string.photo_search),
+                onClick = onPhoto,
+                kind = ButtonKind.TONAL,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        SectionLabel(stringResource(R.string.start_try))
+        ChipRow {
+            START_CITIES.forEach { city -> AppChip(selected = false, label = city, onClick = { onCity(city) }) }
+        }
+        if (saved.isNotEmpty()) {
+            SectionLabel(stringResource(R.string.saved_title))
+            saved.take(5).forEach { item ->
+                SavedRow(item, { onOpenSaved(item.id) }, { onDeleteSaved(item.id) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedRow(item: SavedRoute, onOpen: () -> Unit, onDelete: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onOpen)
+    ) {
+        Row(
+            Modifier.padding(start = 14.dp, top = 8.dp, bottom = 8.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("📌", fontSize = 20.sp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(item.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1)
+                Text(
+                    stringResource(R.string.saved_sub, item.route.stops.size) + " · " +
+                        stringResource(R.string.dist_km, "%.1f".format(item.route.distanceMeters / 1000.0)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconCircle(
+                description = stringResource(R.string.close), onClick = onDelete, size = 34,
+                container = Color.Transparent
+            ) { Text("✕", fontSize = 15.sp, color = MaterialTheme.colorScheme.error) }
+        }
+    }
+}
 
 @Composable
 fun HintContent(status: String?) {
@@ -556,7 +639,8 @@ fun RouteContent(
     foodMaxM: Int,
     loading: Boolean,
     vm: MainViewModel,
-    onStartNav: () -> Unit
+    onStartNav: () -> Unit,
+    onSave: () -> Unit
 ) {
     val context = LocalContext.current
     val km = route.distanceMeters / 1000.0
@@ -619,12 +703,20 @@ fun RouteContent(
             modifier = Modifier.weight(1f)
         )
     }
-    AppButton(
-        text = stringResource(R.string.open_gmaps),
-        onClick = { openUrl(context, googleMapsUrl(route, start)) },
-        kind = ButtonKind.TEXT,
-        modifier = Modifier.fillMaxWidth()
-    )
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        AppButton(
+            text = "💾 " + stringResource(R.string.save_offline),
+            onClick = onSave,
+            kind = ButtonKind.TONAL,
+            modifier = Modifier.weight(1f)
+        )
+        AppButton(
+            text = stringResource(R.string.open_gmaps),
+            onClick = { openUrl(context, googleMapsUrl(route, start)) },
+            kind = ButtonKind.TEXT,
+            modifier = Modifier.weight(1f)
+        )
+    }
 }
 
 private fun googleMapsUrl(route: Route, start: LatLon?): String {

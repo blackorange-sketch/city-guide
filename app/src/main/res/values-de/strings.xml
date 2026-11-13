@@ -167,4 +167,11 @@
     <string name="plan_transit">Öffentlicher Nahverkehr auf langen Strecken</string>
     <string name="transit_info">%1$s (zu Fuß: %2$s)</string>
     <string name="transit_transfers">Umstiege: %1$d</string>
+    <string name="start_try">Stadt ausprobieren</string>
+    <string name="saved_title">Gespeicherte Routen (offline nutzbar)</string>
+    <string name="saved_sub">Stopps: %1$d</string>
+    <string name="save_offline">Offline speichern</string>
+    <string name="saved_ok">Route gespeichert. Karte wird geladen…</string>
+    <string name="map_offline_done">Karte für die Offline-Nutzung gespeichert</string>
+    <string name="map_offline_failed">Karte konnte nicht geladen werden (die Route ist gespeichert)</string>
 </resources>

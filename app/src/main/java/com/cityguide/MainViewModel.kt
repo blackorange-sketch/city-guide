@@ -18,6 +18,8 @@ import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
 import com.cityguide.data.RawPlace
+import com.cityguide.data.SavedRoute
+import com.cityguide.data.SavedRoutes
 import com.cityguide.data.RouteResult
 import com.cityguide.data.TransitLeg
 import com.cityguide.data.Route
@@ -118,13 +120,19 @@ data class UiState(
     val detail: PlaceDetail? = null,
     val nav: NavState = NavState(),
     val info: InfoState? = null,
-    val photo: PhotoState? = null
+    val photo: PhotoState? = null,
+    /** Збережені (офлайн) маршрути. */
+    val saved: List<SavedRoute> = emptyList()
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    init {
+        _state.update { it.copy(saved = SavedRoutes.list(getApplication<Application>())) }
+    }
 
     private fun str(@StringRes id: Int, vararg args: Any): String =
         getApplication<Application>().getString(id, *args)
@@ -599,6 +607,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             steps = steps,
             transit = transitLegs
         )
+    }
+
+    // --- збережені маршрути (офлайн) ---
+
+    /** Зберігає поточний маршрут на пристрої; повертає false, якщо зберігати нічого. */
+    fun saveCurrentRoute(): Boolean {
+        val s = _state.value
+        val route = s.route ?: return false
+        val title = s.city?.name ?: route.stops.first().name
+        val context = getApplication<Application>()
+        SavedRoutes.save(context, title, s.start, route)
+        _state.update { it.copy(saved = SavedRoutes.list(context)) }
+        return true
+    }
+
+    fun openSaved(id: String) {
+        val item = _state.value.saved.firstOrNull { it.id == id } ?: return
+        val first = item.route.stops.firstOrNull() ?: return
+        _state.update {
+            it.copy(
+                city = City(item.title, first.lat, first.lon),
+                query = item.title,
+                suggestions = emptyList(),
+                places = item.route.stops,
+                foods = emptyList(),
+                route = item.route,
+                start = item.start,
+                selected = null, detail = null, status = null, error = null,
+                pickingStart = false
+            )
+        }
+    }
+
+    fun deleteSaved(id: String) {
+        val context = getApplication<Application>()
+        SavedRoutes.delete(context, id)
+        _state.update { it.copy(saved = SavedRoutes.list(context)) }
+    }
+
+    /** Пошук міста за назвою (швидкі кнопки на стартовому екрані). */
+    fun searchFor(name: String) {
+        suggestJob?.cancel()
+        _state.update { it.copy(query = name, suggestions = emptyList()) }
+        launchLoading(str(R.string.status_searching_city)) {
+            val city = Api.geocode(name, lang) ?: error(str(R.string.err_city_not_found))
+            loadPlaces(city)
+        }
     }
 
     fun setTransit(value: Boolean) = _state.update { it.copy(transit = value) }

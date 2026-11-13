@@ -167,4 +167,11 @@
     <string name="plan_transit">Transport publiczny na długich odcinkach</string>
     <string name="transit_info">%1$s (pieszo: %2$s)</string>
     <string name="transit_transfers">przesiadki: %1$d</string>
+    <string name="start_try">Wypróbuj miasto</string>
+    <string name="saved_title">Zapisane trasy (działają offline)</string>
+    <string name="saved_sub">przystanki: %1$d</string>
+    <string name="save_offline">Zapisz offline</string>
+    <string name="saved_ok">Trasa zapisana. Pobieram mapę…</string>
+    <string name="map_offline_done">Mapa zapisana do użytku offline</string>
+    <string name="map_offline_failed">Nie udało się pobrać mapy (sama trasa jest zapisana)</string>
 </resources>

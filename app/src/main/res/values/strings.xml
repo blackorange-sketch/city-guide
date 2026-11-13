@@ -167,4 +167,11 @@
     <string name="plan_transit">Use public transport for long legs</string>
     <string name="transit_info">%1$s (on foot: %2$s)</string>
     <string name="transit_transfers">transfers: %1$d</string>
+    <string name="start_try">Try a city</string>
+    <string name="saved_title">Saved routes (work offline)</string>
+    <string name="saved_sub">%1$d stops</string>
+    <string name="save_offline">Save offline</string>
+    <string name="saved_ok">Route saved. Downloading the map…</string>
+    <string name="map_offline_done">Map saved for offline use</string>
+    <string name="map_offline_failed">Couldn\'t download the map (the route itself is saved)</string>
 </resources>

@@ -5,6 +5,7 @@ package com.cityguide.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -87,6 +88,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cityguide.InfoState
 import com.cityguide.MainViewModel
 import com.cityguide.R
+import com.cityguide.OfflineMaps
 import com.cityguide.PhotoHelper
 import com.cityguide.PhotoState
 import com.cityguide.Tts
@@ -490,10 +492,32 @@ fun MainScreen(
                                 )
                             }
                             PanelKind.ROUTE -> (route ?: routeKeep[0])?.let {
-                                RouteContent(it, s.start, s.foodMaxM, s.loading, vm, onStartNav)
+                                RouteContent(it, s.start, s.foodMaxM, s.loading, vm, onStartNav, onSave = {
+                                    if (vm.saveCurrentRoute()) {
+                                        Toast.makeText(context, R.string.saved_ok, Toast.LENGTH_SHORT).show()
+                                        OfflineMaps.download(
+                                            appContext, mapStyle.url,
+                                            it.geometry + it.stops.map { p -> p.pos }, it.stops.first().name
+                                        ) { ok ->
+                                            Toast.makeText(
+                                                context,
+                                                if (ok) R.string.map_offline_done else R.string.map_offline_failed,
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                })
                             }
                             PanelKind.PLAN -> PlanContent(s, vm, onStartHere)
-                            PanelKind.HINT -> HintContent(s.status)
+                            PanelKind.HINT -> StartContent(
+                                status = s.status,
+                                saved = s.saved,
+                                onCity = vm::searchFor,
+                                onLocate = onLocateClick,
+                                onPhoto = { photoMenu = true },
+                                onOpenSaved = vm::openSaved,
+                                onDeleteSaved = vm::deleteSaved
+                            )
                         }
                     }
                 }

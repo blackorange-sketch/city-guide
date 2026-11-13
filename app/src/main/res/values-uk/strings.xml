@@ -167,4 +167,11 @@
     <string name="plan_transit">Громадський транспорт на довгих переходах</string>
     <string name="transit_info">%1$s (пішки: %2$s)</string>
     <string name="transit_transfers">пересадок: %1$d</string>
+    <string name="start_try">Спробуйте місто</string>
+    <string name="saved_title">Збережені маршрути (працюють офлайн)</string>
+    <string name="saved_sub">зупинок: %1$d</string>
+    <string name="save_offline">Зберегти офлайн</string>
+    <string name="saved_ok">Маршрут збережено. Завантажую карту…</string>
+    <string name="map_offline_done">Карту збережено для роботи без інтернету</string>
+    <string name="map_offline_failed">Не вдалося завантажити карту (сам маршрут збережено)</string>
 </resources>
