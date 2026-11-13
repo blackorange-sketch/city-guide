@@ -545,7 +545,7 @@ fun MainScreen(
         }
 
         AnimatedVisibility(
-            visible = !nav.active,
+            visible = !nav.active && s.info == null,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = (searchBottom / density).dp + 12.dp, end = 14.dp),

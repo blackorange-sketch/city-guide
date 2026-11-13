@@ -575,6 +575,73 @@ object Api {
     )
 
     /** Мініатюри фото зі статті Вікіпедії (Wikimedia Commons), без значків і схем. */
+    /**
+     * Фото для місць без зображення у статті Вікіпедії: файл із тегів OSM, зображення з Wikidata (P18),
+     * а далі знімки з Wikimedia Commons, зроблені поруч (до 150 м).
+     */
+    suspend fun fallbackImages(
+        lat: Double,
+        lon: Double,
+        wikidataId: String?,
+        commonsTag: String?,
+        imageTag: String?
+    ): List<String> = withContext(Dispatchers.IO) {
+        val result = mutableListOf<String>()
+        fun fileUrl(name: String) = "https://commons.wikimedia.org/wiki/Special:FilePath/" +
+            android.net.Uri.encode(name.removePrefix("File:").replace(' ', '_')) + "?width=720"
+        commonsTag?.takeIf { it.startsWith("File:") }?.let { result += fileUrl(it) }
+        imageTag?.takeIf { it.startsWith("http") && Regex("\\.(jpe?g|png|webp)$", RegexOption.IGNORE_CASE).containsMatchIn(it) }
+            ?.let { result += it }
+        if (result.isEmpty() && wikidataId != null) {
+            try {
+                val url = "https://www.wikidata.org/w/api.php".toHttpUrl().newBuilder()
+                    .addQueryParameter("action", "wbgetclaims")
+                    .addQueryParameter("format", "json")
+                    .addQueryParameter("entity", wikidataId)
+                    .addQueryParameter("property", "P18")
+                    .build()
+                val name = execute(Request.Builder().url(url).build()).jsonObject["claims"]
+                    ?.jsonObject?.get("P18")?.jsonArray?.firstOrNull()?.jsonObject?.get("mainsnak")
+                    ?.jsonObject?.get("datavalue")?.jsonObject?.get("value")?.jsonPrimitive?.contentOrNull
+                if (name != null) result += fileUrl(name)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // не критично: пробуємо Commons
+            }
+        }
+        if (result.size < 3 && (lat != 0.0 || lon != 0.0)) {
+            try {
+                val url = "https://commons.wikimedia.org/w/api.php".toHttpUrl().newBuilder()
+                    .addQueryParameter("action", "query")
+                    .addQueryParameter("format", "json")
+                    .addQueryParameter("formatversion", "2")
+                    .addQueryParameter("generator", "geosearch")
+                    .addQueryParameter("ggscoord", "$lat|$lon")
+                    .addQueryParameter("ggsradius", "150")
+                    .addQueryParameter("ggsnamespace", "6")
+                    .addQueryParameter("ggslimit", "10")
+                    .addQueryParameter("prop", "imageinfo")
+                    .addQueryParameter("iiprop", "url|mime")
+                    .addQueryParameter("iiurlwidth", "720")
+                    .build()
+                val pages = execute(Request.Builder().url(url).build())
+                    .jsonObject["query"]?.jsonObject?.get("pages")?.jsonArray.orEmpty()
+                pages.mapNotNullTo(result) { p ->
+                    val info = p.jsonObject["imageinfo"]?.jsonArray?.firstOrNull()?.jsonObject
+                        ?: return@mapNotNullTo null
+                    if (info["mime"]?.jsonPrimitive?.contentOrNull != "image/jpeg") return@mapNotNullTo null
+                    info["thumburl"]?.jsonPrimitive?.contentOrNull
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // без фото теж можна
+            }
+        }
+        result.distinct().take(8)
+    }
+
     suspend fun gallery(wikiLang: String, title: String): List<String> = withContext(Dispatchers.IO) {
         val url = "https://$wikiLang.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
             .addQueryParameter("action", "query")

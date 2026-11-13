@@ -356,7 +356,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 Triple(a.await(), g.await(), f.await())
             }
-            val detail = cached ?: title?.let { Api.placeDetail(wikiLang, it) }
+            var detail = cached ?: title?.let { Api.placeDetail(wikiLang, it) }
+            var photos = gallery
+            // У статті немає фото (або статті немає): шукаємо знімки на Wikimedia Commons
+            if (detail?.imageUrl == null && photos.isEmpty()) {
+                val extra = runCatching {
+                    Api.fallbackImages(
+                        place.lat, place.lon, place.wikidataId,
+                        place.tags["wikimedia_commons"], place.tags["image"]
+                    )
+                }.getOrDefault(emptyList())
+                if (extra.isNotEmpty()) {
+                    photos = extra
+                    detail = (detail ?: PlaceDetail(null, null, null)).copy(imageUrl = extra.first())
+                }
+            }
             val known = osm.map { it.kind }.toSet()
             val facts = osm + wikiFacts.filter { it.kind !in known }
             _state.update { cur ->
@@ -367,7 +381,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         loading = false,
                         detail = detail ?: info.detail,
                         article = article,
-                        gallery = gallery,
+                        gallery = photos,
                         facts = facts
                     )
                 )
@@ -1082,7 +1096,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val INFO_TAG_KEYS = setOf(
             "opening_hours", "phone", "contact:phone", "email", "contact:email", "cuisine",
             "outdoor_seating", "takeaway", "delivery", "diet:vegetarian", "wheelchair", "fee",
-            "addr:street", "addr:housenumber", "addr:city", "start_date", "architect", "height"
+            "addr:street", "addr:housenumber", "addr:city", "start_date", "architect", "height",
+            "wikimedia_commons", "image"
         )
         const val QUICK_RADIUS_M = 1500
         const val FSQ_SCORE_BASE = 20
