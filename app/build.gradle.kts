@@ -19,6 +19,9 @@ android {
         // Адреса кеш-проксі (Cloudflare Worker, див. proxy/README.md); порожня = без проксі
         val proxy = ((project.findProperty("proxyUrl") as String?) ?: "").trim().trimEnd('/')
         buildConfigField("String", "PROXY_URL", "\"$proxy\"")
+        // Необов'язковий ключ застосунку для /identify (секрет APP_KEY на проксі)
+        val proxyKey = ((project.findProperty("proxyKey") as String?) ?: "").trim()
+        buildConfigField("String", "PROXY_KEY", "\"$proxyKey\"")
     }
 
     signingConfigs {
@@ -71,6 +74,7 @@ dependencies {
 
     // Фото місць
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.browser:browser:1.8.0")
 
     // Мережа та JSON
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

@@ -28,10 +28,21 @@ object RoutePlanner {
     /** Скільки зупинок вміщається в прогулянку: орієнтовно 30 хв на зупинку з дорогою. */
     fun stopsForDuration(minutes: Int): Int = (minutes / 30).coerceIn(2, 10)
 
+    private val ENT_TOURISM = setOf("zoo", "theme_park", "aquarium")
+    private val ENT_AMENITY = setOf("cinema", "theatre", "arts_centre", "planetarium")
+    private val ENT_LEISURE = setOf(
+        "bowling_alley", "escape_game", "amusement_arcade", "water_park",
+        "miniature_golf", "ice_rink", "trampoline_park", "adventure_park"
+    )
+
+    fun isEntertainment(tags: Map<String, String>): Boolean =
+        tags["tourism"] in ENT_TOURISM || tags["amenity"] in ENT_AMENITY || tags["leisure"] in ENT_LEISURE
+
     fun categorize(tags: Map<String, String>): Category = when {
         tags["tourism"] == "museum" || tags["tourism"] == "gallery" -> Category.MUSEUMS
         tags["tourism"] == "viewpoint" -> Category.VIEWS
         tags["amenity"] == "place_of_worship" -> Category.RELIGION
+        isEntertainment(tags) -> Category.ENTERTAINMENT
         tags.containsKey("historic") -> Category.HISTORY
         tags["leisure"] in setOf("park", "garden", "nature_reserve") -> Category.PARK
         else -> Category.OTHER

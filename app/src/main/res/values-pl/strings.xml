@@ -142,4 +142,24 @@
     <string name="fact_style">Styl</string>
     <string name="fact_heritage">Status zabytku</string>
     <string name="fact_height">Wysokość</string>
+    <string name="cat_entertainment">Rozrywka</string>
+    <string name="tickets">Bilety</string>
+    <string name="tickets_title">Bilety i wstęp</string>
+    <string name="tickets_official">Oficjalna strona</string>
+    <string name="tickets_gyg">GetYourGuide</string>
+    <string name="tickets_tiqets">Tiqets</string>
+    <string name="tickets_search">Szukaj w internecie</string>
+    <string name="tickets_note">Bilety sprzedają strony partnerów; aplikacja nie przyjmuje płatności.</string>
+    <string name="tickets_query">bilety</string>
+    <string name="photo_search">Szukaj po zdjęciu</string>
+    <string name="photo_camera">Zrób zdjęcie</string>
+    <string name="photo_gallery">Wybierz z galerii</string>
+    <string name="photo_hint">Skieruj na pomnik, budynek lub obraz — aplikacja spróbuje go rozpoznać.</string>
+    <string name="photo_identifying">Rozpoznaję zdjęcie…</string>
+    <string name="photo_result_title">To wygląda na</string>
+    <string name="photo_maybe">Nie jestem pewien — możliwe dopasowanie</string>
+    <string name="photo_more">Szczegóły</string>
+    <string name="photo_unavailable">Wyszukiwanie po zdjęciu wymaga serwera proxy z kluczem AI (zob. README).</string>
+    <string name="photo_not_found">Nie udało się rozpoznać. Spróbuj ostrzejszego zdjęcia z bliska.</string>
+    <string name="photo_failed">Wyszukiwanie po zdjęciu nie powiodło się. Spróbuj później.</string>
 </resources>

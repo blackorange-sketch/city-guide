@@ -25,7 +25,7 @@ jobs:
           gradle-version: 8.10.2
 
       - name: Build signed release APK
-        run: gradle assembleRelease -PbuildNumber=${{ github.run_number }} -PproxyUrl="${{ vars.PROXY_URL }}" --no-daemon
+        run: gradle assembleRelease -PbuildNumber=${{ github.run_number }} -PproxyUrl="${{ vars.PROXY_URL }}" -PproxyKey="${{ secrets.PROXY_KEY }}" --no-daemon
 
       - name: Prepare APK
         run: cp app/build/outputs/apk/release/app-release.apk CityGuide.apk

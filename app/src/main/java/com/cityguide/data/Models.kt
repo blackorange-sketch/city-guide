@@ -15,6 +15,7 @@ enum class Category(@StringRes val labelRes: Int, val color: String) {
     VIEWS(R.string.cat_views, "#039BE5"),
     RELIGION(R.string.cat_religion, "#FB8C00"),
     PARK(R.string.cat_park, "#2E7D32"),
+    ENTERTAINMENT(R.string.cat_entertainment, "#D81B60"),
     OTHER(R.string.cat_other, "#E53935"),
     FOOD(R.string.cat_food, "#F9A825");
 

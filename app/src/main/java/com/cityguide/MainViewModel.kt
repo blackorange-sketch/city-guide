@@ -11,6 +11,8 @@ import com.cityguide.data.Category
 import com.cityguide.data.City
 import com.cityguide.data.FactKind
 import com.cityguide.data.HttpException
+import com.cityguide.data.IdentifyUnavailableException
+import com.cityguide.data.Identified
 import com.cityguide.data.InfoFact
 import com.cityguide.data.LatLon
 import com.cityguide.data.Place
@@ -18,12 +20,14 @@ import com.cityguide.data.PlaceDetail
 import com.cityguide.data.RawPlace
 import com.cityguide.data.Route
 import com.cityguide.data.Suggestion
+import com.cityguide.data.WikiHit
 import com.cityguide.data.WikiInfo
 import com.cityguide.domain.Geo
 import com.cityguide.domain.Instructions
 import com.cityguide.domain.RoutePlanner
 import com.cityguide.domain.RouteTracker
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -33,6 +37,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.Locale
 import kotlin.math.max
@@ -75,6 +80,14 @@ data class InfoState(
     val facts: List<InfoFact> = emptyList()
 )
 
+/** Пошук за фото: завантаження, результат розпізнавання або помилка. */
+data class PhotoState(
+    val loading: Boolean = true,
+    val result: Identified? = null,
+    val hit: WikiHit? = null,
+    val error: String? = null
+)
+
 data class UiState(
     val query: String = "",
     val loading: Boolean = false,
@@ -98,7 +111,8 @@ data class UiState(
     val selected: Place? = null,
     val detail: PlaceDetail? = null,
     val nav: NavState = NavState(),
-    val info: InfoState? = null
+    val info: InfoState? = null,
+    val photo: PhotoState? = null
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -334,6 +348,70 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    // --- пошук за фото ---
+
+    private var photoJob: Job? = null
+
+    /** Розпізнає об'єкт на фото; [loader] повертає стиснутий JPEG (виконується у фоновому потоці). */
+    fun identifyPhoto(loader: () -> ByteArray?) {
+        photoJob?.cancel()
+        _state.update { it.copy(photo = PhotoState()) }
+        photoJob = viewModelScope.launch {
+            try {
+                val jpeg = withContext(Dispatchers.IO) { loader() }
+                    ?: error(str(R.string.photo_failed))
+                val hint = _state.value.city?.name.orEmpty()
+                val result = Api.identify(jpeg, lang, hint)
+                val name = result.name
+                if (!result.found || name == null) {
+                    _state.update {
+                        it.copy(photo = PhotoState(false, result, null, str(R.string.photo_not_found)))
+                    }
+                    return@launch
+                }
+                val hit = Api.resolveWiki(result.wikiEn, listOfNotNull(name, result.place).joinToString(" "), lang)
+                _state.update { it.copy(photo = PhotoState(false, result, hit, null)) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IdentifyUnavailableException) {
+                _state.update { it.copy(photo = PhotoState(false, error = str(R.string.photo_unavailable))) }
+            } catch (e: Exception) {
+                val text = if (e is IOException) errorText(e) else str(R.string.photo_failed)
+                _state.update { it.copy(photo = PhotoState(false, error = text)) }
+            }
+        }
+    }
+
+    fun closePhoto() {
+        photoJob?.cancel()
+        _state.update { it.copy(photo = null) }
+    }
+
+    /** Відкриває екран докладної інформації про розпізнаний об'єкт. */
+    fun openPhotoResult() {
+        val photo = _state.value.photo ?: return
+        val hit = photo.hit ?: return
+        val kind = photo.result?.kind
+        val place = Place(
+            id = "photo/" + (hit.wikidataId ?: hit.title),
+            wikidataId = hit.wikidataId,
+            name = hit.title,
+            description = hit.description ?: photo.result?.description,
+            lat = hit.lat ?: 0.0,
+            lon = hit.lon ?: 0.0,
+            category = when (kind) {
+                "painting", "sculpture" -> Category.MUSEUMS
+                "monument", "building" -> Category.HISTORY
+                else -> Category.OTHER
+            },
+            score = 0,
+            wikiTitle = hit.title,
+            wikiLang = hit.lang
+        )
+        closePhoto()
+        openInfo(place)
     }
 
     fun closeInfo() {
@@ -623,7 +701,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             lat = r.lat,
             lon = r.lon,
             category = RoutePlanner.categorize(r.tags),
-            score = wiki?.sitelinks ?: 0,
+            score = wiki?.sitelinks ?: ENTERTAINMENT_BASE_SCORE.takeIf { RoutePlanner.isEntertainment(r.tags) }
+                ?: 0,
             wikiTitle = wiki?.wikiTitle,
             wikiLang = wiki?.wikiLang,
             website = r.tags["website"] ?: r.tags["contact:website"],
@@ -686,7 +765,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // Попередній список без місць з Вікіпедії, чия значущість ще невідома
         val preliminary = around.sights
             .filter { it.tags[Api.WIKI_ONLY_TAG] == null }
-            .mapNotNull { toPlace(it, null) }.take(limit)
+            .mapNotNull { toPlace(it, null) }.let { withEntertainmentQuota(it, limit) }
         _state.update {
             it.copy(places = preliminary, foods = foods, status = str(R.string.status_scoring))
         }
@@ -709,7 +788,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             .mapNotNull { toPlace(it, it.wikidataId?.let { id -> info[id] }) }
             .sortedByDescending { it.score }
-            .take(limit)
+            .let { withEntertainmentQuota(it, limit) }
         if (places.isEmpty()) {
             if (strict) error(str(R.string.err_no_places))
             return
@@ -722,6 +801,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
+
+    /**
+     * Розваги мають малу «значущість» (немає статей у Вікіпедії), тож без квоти вони
+     * випали б зі списку. Лишаємо до чверті ліміту для них, решту віддаємо визначним місцям.
+     */
+    private fun withEntertainmentQuota(sorted: List<Place>, limit: Int): List<Place> {
+        val (entertainment, rest) = sorted.partition { it.category == Category.ENTERTAINMENT }
+        val quota = (limit / 4).coerceAtLeast(8)
+        val ent = entertainment.sortedByDescending { entertainmentRank(it) }.take(quota)
+        return rest.sortedByDescending { it.score }.take((limit - ent.size).coerceAtLeast(0)) + ent
+    }
+
+    /** Розваги з сайтом, годинами роботи чи статтею в Вікіпедії — вище. */
+    private fun entertainmentRank(p: Place): Int =
+        p.score + (if (p.website != null) 2 else 0) + (if (p.hours != null) 1 else 0)
 
     private fun sameName(a: String, b: String): Boolean {
         fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
@@ -802,6 +896,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 600
+        const val ENTERTAINMENT_BASE_SCORE = 1
         val ADMIN_DESCRIPTION = Regex(
             "municipality|county|gmina|commune|district|voivodeship|province|region|\\b(city|town) (in|of|and|with|on)\\b|^(city|town)\\b|" +
                 "village|settlement|locality|hamlet|borough|neighbou?rhood|suburb|country|" +

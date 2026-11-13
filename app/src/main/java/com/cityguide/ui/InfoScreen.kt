@@ -62,7 +62,8 @@ fun InfoScreen(
     canAdd: Boolean,
     loading: Boolean,
     onAdd: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    city: String = ""
 ) {
     val context = LocalContext.current
     val imageLoader = rememberImageLoader()
@@ -145,7 +146,7 @@ fun InfoScreen(
                         )
                         Spacer(Modifier.width(7.dp))
                         Text(
-                            if (place.category == Category.FOOD) categoryName
+                            if (place.category == Category.FOOD || place.category == Category.ENTERTAINMENT) categoryName
                             else stringResource(R.string.place_sub_wiki, categoryName, place.score),
                             style = MaterialTheme.typography.labelLarge,
                             color = colors.primary
@@ -183,6 +184,9 @@ fun InfoScreen(
                                 kind = ButtonKind.TONAL,
                                 modifier = Modifier.widthIn(min = 130.dp)
                             )
+                        }
+                        if (ticketsRelevant(place)) {
+                            TicketsButton(place, city, Modifier.widthIn(min = 130.dp), ButtonKind.FILLED)
                         }
                         if (site != null) {
                             AppButton(

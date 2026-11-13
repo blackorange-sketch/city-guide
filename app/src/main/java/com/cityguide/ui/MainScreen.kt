@@ -4,8 +4,10 @@ package com.cityguide.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -57,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -82,6 +85,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cityguide.InfoState
 import com.cityguide.MainViewModel
 import com.cityguide.R
+import com.cityguide.PhotoHelper
+import com.cityguide.PhotoState
 import com.cityguide.Tts
 import com.cityguide.UiState
 import com.cityguide.currentLocation
@@ -119,6 +124,18 @@ fun MainScreen(
     fun startLocate() {
         val appContext = context.applicationContext
         vm.locate { currentLocation(appContext)?.let { it.latitude to it.longitude } }
+    }
+
+    // --- пошук за фото: вибір джерела, камера (через FileProvider) або галерея ---
+    var photoMenu by remember { mutableStateOf(false) }
+    var cameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    val appContext = context.applicationContext
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) vm.identifyPhoto { PhotoHelper.loadJpeg(appContext, uri) }
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val uri = cameraUri
+        if (ok && uri != null) vm.identifyPhoto { PhotoHelper.loadJpeg(appContext, uri) }
     }
 
     var wantNav by remember { mutableStateOf(false) }
@@ -285,6 +302,7 @@ fun MainScreen(
                             focus = focus,
                             themeMode = themeMode,
                             onLocate = onLocateClick,
+                            onPhoto = { photoMenu = true },
                             onCycleTheme = onCycleTheme
                         )
                     }
@@ -447,7 +465,8 @@ fun MainScreen(
                                     loading = s.loading,
                                     onAdd = { vm.addToRoute(place) },
                                     onMore = { vm.openInfo(place) },
-                                    onClose = vm::clearSelection
+                                    onClose = vm::clearSelection,
+                                    city = s.city?.name.orEmpty()
                                 )
                             }
                             PanelKind.ROUTE -> (route ?: routeKeep[0])?.let {
@@ -475,11 +494,44 @@ fun MainScreen(
                     canAdd = route != null && current?.stops?.any { it.id == info.place.id } != true,
                     loading = s.loading,
                     onAdd = { vm.addToRoute(info.place) },
-                    onClose = vm::closeInfo
+                    onClose = vm::closeInfo,
+                    city = if (info.place.id.startsWith("photo/")) "" else s.city?.name.orEmpty()
                 )
             }
         }
+
+        PhotoDialogs(
+            show = photoMenu,
+            photo = s.photo,
+            vm = vm,
+            onDismissMenu = { photoMenu = false },
+            onCamera = {
+                photoMenu = false
+                val uri = PhotoHelper.newCameraUri(appContext)
+                cameraUri = uri
+                cameraLauncher.launch(uri)
+            },
+            onGallery = {
+                photoMenu = false
+                galleryLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            }
+        )
     }
+}
+
+@Composable
+private fun PhotoDialogs(
+    show: Boolean,
+    photo: PhotoState?,
+    vm: MainViewModel,
+    onDismissMenu: () -> Unit,
+    onCamera: () -> Unit,
+    onGallery: () -> Unit
+) {
+    if (show) PhotoSourceDialog(onCamera = onCamera, onGallery = onGallery, onDismiss = onDismissMenu)
+    if (photo != null) PhotoResultDialog(photo, onDetails = vm::openPhotoResult, onClose = vm::closePhoto)
 }
 
 /** Плаваюча пошукова капсула: поле, геолокація, перемикач теми, індикатор завантаження. */
@@ -490,6 +542,7 @@ private fun SearchPill(
     focus: FocusManager,
     themeMode: ThemeMode,
     onLocate: () -> Unit,
+    onPhoto: () -> Unit,
     onCycleTheme: () -> Unit
 ) {
     Surface(
@@ -539,6 +592,12 @@ private fun SearchPill(
                         disabledIndicatorColor = Color.Transparent
                     )
                 )
+                IconCircle(
+                    description = stringResource(R.string.photo_search),
+                    onClick = onPhoto,
+                    enabled = !s.loading
+                ) { Text("📷", fontSize = 18.sp) }
+                Spacer(Modifier.width(6.dp))
                 IconCircle(
                     description = stringResource(R.string.my_location_name),
                     onClick = onLocate,

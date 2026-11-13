@@ -1,6 +1,7 @@
 package com.cityguide.data
 
 import android.content.Context
+import android.util.Base64
 import com.cityguide.BuildConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
@@ -35,6 +37,8 @@ import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.File
 import java.io.IOException
@@ -93,6 +97,30 @@ data class RouteResult(
     val steps: List<Step>
 )
 
+/** Результат розпізнавання фото (відповідь сервера-проксі). */
+data class Identified(
+    val found: Boolean,
+    val name: String?,
+    val kind: String?,
+    val wikiEn: String?,
+    val place: String?,
+    val confidence: String?,
+    val description: String?
+)
+
+/** Стаття Вікіпедії, знайдена для розпізнаного об'єкта. */
+data class WikiHit(
+    val title: String,
+    val lang: String,
+    val wikidataId: String?,
+    val description: String?,
+    val lat: Double?,
+    val lon: Double?
+)
+
+/** Пошук за фото не налаштований: немає проксі або на ньому немає ключа ШІ. */
+class IdentifyUnavailableException : IOException("Photo search is not configured")
+
 data class Suggestion(val name: String, val subtitle: String, val lat: Double, val lon: Double)
 
 /**
@@ -129,6 +157,11 @@ object Api {
     )
     /** Кеш-проксі (Cloudflare Worker) з BuildConfig; порожній рядок = працюємо напряму. */
     private val PROXY: String = BuildConfig.PROXY_URL
+
+    private val PROXY_KEY: String = BuildConfig.PROXY_KEY
+
+    /** Пошук за фото працює лише через проксі, де зберігається ключ ШІ. */
+    val canIdentify: Boolean get() = PROXY.isNotEmpty()
 
     /** Рейтинги закладів доступні лише через проксі (там зберігається ключ Foursquare). */
     val hasRatings: Boolean get() = PROXY.isNotEmpty()
@@ -372,12 +405,19 @@ object Api {
                 clauses += "nwr[\"name\"][\"historic\"~\"^(castle|monument|memorial|ruins|fort|archaeological_site|city_gate|manor)\$\"]$around;"
             }
             val limit = if (extended) 500 else 300
-            val query = "[out:json][timeout:25];(" + clauses.joinToString("") + ")->.s;" +
+            // Розваги: кіно, театри, зоопарки, боулінг, квести тощо (без вимоги wikidata)
+            val entertainment = "(" +
+                "nwr[\"name\"][\"tourism\"~\"^(zoo|theme_park|aquarium)\$\"]$around;" +
+                "nwr[\"name\"][\"amenity\"~\"^(cinema|theatre|arts_centre|planetarium)\$\"]$around;" +
+                "nwr[\"name\"][\"leisure\"~\"^(bowling_alley|escape_game|amusement_arcade|water_park|" +
+                "miniature_golf|ice_rink|trampoline_park|adventure_park)\$\"]$around;" +
+                ")->.e;"
+            val query = "[out:json][timeout:25];(" + clauses.joinToString("") + ")->.s;" + entertainment +
                 "nwr[\"amenity\"~\"^(restaurant|cafe|fast_food|pub|bar|ice_cream|food_court|biergarten)\$\"]" +
                 "[~\"^(name|brand)\$\"~\".\"]$foodAround->.f;" +
-                ".s out center tags $limit;.f out center tags 1500;"
+                ".s out center tags $limit;.f out center tags 1500;.e out center tags 250;"
 
-            val key = String.format(Locale.US, "v3_%.3f_%.3f_%d_%b", city.lat, city.lon, radiusM, extended)
+            val key = String.format(Locale.US, "v4_%.3f_%.3f_%d_%b", city.lat, city.lon, radiusM, extended)
             val (foods, sights) = parseElements(overpass(query, key))
                 .partition { it.tags["amenity"] in FOOD_AMENITIES }
             AroundResult(sights = sights, foods = foods)
@@ -790,6 +830,99 @@ object Api {
     }
 
     /** Короткий опис і фото зі статті Вікіпедії (best-effort). */
+    /** Розпізнає пам'ятник, будівлю чи картину на фото через проксі (ШІ з розпізнаванням зображень). */
+    suspend fun identify(jpeg: ByteArray, lang: String, hint: String): Identified =
+        withContext(Dispatchers.IO) {
+            if (PROXY.isEmpty()) throw IdentifyUnavailableException()
+            val payload = buildJsonObject {
+                put("image", Base64.encodeToString(jpeg, Base64.NO_WRAP))
+                put("lang", lang)
+                put("hint", hint)
+            }.toString()
+            val builder = Request.Builder()
+                .url("$PROXY/identify")
+                .post(payload.toRequestBody("application/json".toMediaType()))
+            if (PROXY_KEY.isNotEmpty()) builder.header("x-app-key", PROXY_KEY)
+            val text = try {
+                executeText(builder.build())
+            } catch (e: HttpException) {
+                // 404: на проксі немає ключа ШІ; 403: невірний ключ застосунку
+                if (e.code == 404 || e.code == 403) throw IdentifyUnavailableException()
+                throw e
+            }
+            val o = Json.parseToJsonElement(text).jsonObject
+            fun str(key: String) = o[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() && it != "null" }
+            Identified(
+                found = o["found"]?.jsonPrimitive?.booleanOrNull ?: (str("name") != null),
+                name = str("name"),
+                kind = str("kind"),
+                wikiEn = str("wikipedia_en"),
+                place = str("place"),
+                confidence = str("confidence"),
+                description = str("description")
+            )
+        }
+
+    /** Знаходить статтю Вікіпедії (бажано мовою інтерфейсу) за назвою англійською статті або текстовим пошуком. */
+    suspend fun resolveWiki(enTitle: String?, query: String, lang: String): WikiHit? =
+        withContext(Dispatchers.IO) {
+            try {
+                val title = enTitle ?: searchWikiTitle(query) ?: return@withContext null
+                var wikiLang = "en"
+                var local = title
+                if (lang != "en") {
+                    val url = "https://en.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
+                        .addQueryParameter("action", "query")
+                        .addQueryParameter("format", "json")
+                        .addQueryParameter("formatversion", "2")
+                        .addQueryParameter("redirects", "1")
+                        .addQueryParameter("prop", "langlinks")
+                        .addQueryParameter("lllang", lang)
+                        .addQueryParameter("titles", title)
+                        .build()
+                    val page = execute(Request.Builder().url(url).build()).jsonObject["query"]
+                        ?.jsonObject?.get("pages")?.jsonArray?.firstOrNull()?.jsonObject
+                    val link = page?.get("langlinks")?.jsonArray?.firstOrNull()?.jsonObject
+                        ?.get("title")?.jsonPrimitive?.contentOrNull
+                    if (link != null) {
+                        wikiLang = lang
+                        local = link
+                    }
+                }
+                val summaryUrl = "https://$wikiLang.wikipedia.org/api/rest_v1/page/summary/".toHttpUrl()
+                    .newBuilder().addPathSegment(local.replace(' ', '_')).build()
+                val o = execute(Request.Builder().url(summaryUrl).build()).jsonObject
+                if (o["type"]?.jsonPrimitive?.contentOrNull == "disambiguation") return@withContext null
+                val coords = o["coordinates"] as? JsonObject
+                WikiHit(
+                    title = o["title"]?.jsonPrimitive?.contentOrNull ?: local,
+                    lang = wikiLang,
+                    wikidataId = o["wikibase_item"]?.jsonPrimitive?.contentOrNull,
+                    description = o["description"]?.jsonPrimitive?.contentOrNull,
+                    lat = coords?.get("lat")?.jsonPrimitive?.doubleOrNull,
+                    lon = coords?.get("lon")?.jsonPrimitive?.doubleOrNull
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+    private suspend fun searchWikiTitle(query: String): String? {
+        val url = "https://en.wikipedia.org/w/api.php".toHttpUrl().newBuilder()
+            .addQueryParameter("action", "query")
+            .addQueryParameter("format", "json")
+            .addQueryParameter("formatversion", "2")
+            .addQueryParameter("list", "search")
+            .addQueryParameter("srlimit", "1")
+            .addQueryParameter("srsearch", query)
+            .build()
+        return execute(Request.Builder().url(url).build()).jsonObject["query"]
+            ?.jsonObject?.get("search")?.jsonArray?.firstOrNull()?.jsonObject
+            ?.get("title")?.jsonPrimitive?.contentOrNull
+    }
+
     suspend fun placeDetail(wikiLang: String, title: String): PlaceDetail? = withContext(Dispatchers.IO) {
         try {
             val url = "https://$wikiLang.wikipedia.org/api/rest_v1/page/summary/".toHttpUrl()

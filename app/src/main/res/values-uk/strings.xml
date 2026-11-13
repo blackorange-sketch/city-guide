@@ -142,4 +142,24 @@
     <string name="fact_style">Стиль</string>
     <string name="fact_heritage">Статус пам\'ятки</string>
     <string name="fact_height">Висота</string>
+    <string name="cat_entertainment">Розваги</string>
+    <string name="tickets">Квитки</string>
+    <string name="tickets_title">Квитки та вхід</string>
+    <string name="tickets_official">Офіційний сайт</string>
+    <string name="tickets_gyg">GetYourGuide</string>
+    <string name="tickets_tiqets">Tiqets</string>
+    <string name="tickets_search">Пошук в інтернеті</string>
+    <string name="tickets_note">Квитки продають сайти-партнери; застосунок платежів не приймає.</string>
+    <string name="tickets_query">квитки</string>
+    <string name="photo_search">Пошук за фото</string>
+    <string name="photo_camera">Зробити фото</string>
+    <string name="photo_gallery">Вибрати з галереї</string>
+    <string name="photo_hint">Наведіть на пам’ятник, будівлю чи картину — застосунок спробує її розпізнати.</string>
+    <string name="photo_identifying">Розпізнаю фото…</string>
+    <string name="photo_result_title">Схоже, це</string>
+    <string name="photo_maybe">Не певен — можливий варіант</string>
+    <string name="photo_more">Докладніше</string>
+    <string name="photo_unavailable">Пошук за фото потребує проксі-сервера з ключем ШІ (див. README).</string>
+    <string name="photo_not_found">Не вдалося розпізнати. Спробуйте чіткіше фото ближче до об’єкта.</string>
+    <string name="photo_failed">Пошук за фото не вдався. Спробуйте пізніше.</string>
 </resources>

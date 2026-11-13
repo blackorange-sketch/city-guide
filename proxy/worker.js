@@ -3,6 +3,8 @@
 //   POST /overpass  : тіло як у Overpass (data=...), перегони дзеркал + кеш на добу
 //   GET  /wikidata  : проксі до wikidata.org/w/api.php з кешем на тиждень
 //   GET  /fsq       : проксі до Foursquare Places (потрібен секрет FSQ_KEY), кеш на 6 годин
+//   POST /identify  : розпізнавання пам'ятника, будівлі чи картини за фото (секрет ANTHROPIC_KEY;
+//                     необов'язково APP_KEY — тоді застосунок мусить слати той самий x-app-key)
 
 const OVERPASS_MIRRORS = [
   "https://overpass-api.de/api/interpreter",
@@ -77,6 +79,56 @@ async function cached(request, ctx, keyUrl, maxAge, produce) {
   return response;
 }
 
+const IDENTIFY_PROMPT = (lang, hint) =>
+  `Identify the landmark, monument, building, sculpture or painting in this photo. ` +
+  `Reply with ONE JSON object and nothing else, with keys: ` +
+  `"found" (boolean), "name" (string, the commonly used name), ` +
+  `"kind" (one of "monument","building","painting","sculpture","other"), ` +
+  `"wikipedia_en" (exact title of the English Wikipedia article about it, or null if unsure), ` +
+  `"place" (city and country, or the museum that holds it), ` +
+  `"confidence" ("high","medium" or "low"), ` +
+  `"description" (1-2 sentences in the language with code "${lang}"). ` +
+  `If you cannot recognise a specific well-known object, set "found" to false. Do not guess wildly.` +
+  (hint ? ` The photo was probably taken near: ${hint}.` : "");
+
+async function identify(request, env) {
+  if (!env.ANTHROPIC_KEY) return json(JSON.stringify({ error: "identify_disabled" }), 404);
+  if (env.APP_KEY && request.headers.get("x-app-key") !== env.APP_KEY) {
+    return json(JSON.stringify({ error: "forbidden" }), 403);
+  }
+  const raw = await request.text();
+  if (raw.length > 4_000_000) return json(JSON.stringify({ error: "too_large" }), 413);
+  const { image, lang = "en", hint = "" } = JSON.parse(raw);
+  if (!image) return json(JSON.stringify({ error: "no_image" }), 400);
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": env.ANTHROPIC_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
+      max_tokens: 500,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image } },
+            { type: "text", text: IDENTIFY_PROMPT(lang, hint) },
+          ],
+        },
+      ],
+    }),
+  });
+  const data = await r.json();
+  if (!r.ok) return json(JSON.stringify({ error: "upstream", status: r.status }), 502);
+  const text = (data.content || []).map((c) => c.text || "").join("");
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return json(JSON.stringify({ found: false }), 200);
+  return json(match[0], 200);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -97,6 +149,10 @@ export default {
           });
           return { text: await r.text(), status: r.status };
         });
+      }
+
+      if (url.pathname === "/identify" && request.method === "POST") {
+        return await identify(request, env);
       }
 
       if (url.pathname === "/fsq") {

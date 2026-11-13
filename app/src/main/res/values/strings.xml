@@ -142,4 +142,24 @@
     <string name="fact_style">Style</string>
     <string name="fact_heritage">Heritage status</string>
     <string name="fact_height">Height</string>
+    <string name="cat_entertainment">Entertainment</string>
+    <string name="tickets">Tickets</string>
+    <string name="tickets_title">Tickets &amp; entry</string>
+    <string name="tickets_official">Official website</string>
+    <string name="tickets_gyg">GetYourGuide</string>
+    <string name="tickets_tiqets">Tiqets</string>
+    <string name="tickets_search">Search the web</string>
+    <string name="tickets_note">Tickets are sold on the partners’ sites; the app does not take payments.</string>
+    <string name="tickets_query">tickets</string>
+    <string name="photo_search">Search by photo</string>
+    <string name="photo_camera">Take a photo</string>
+    <string name="photo_gallery">Choose from gallery</string>
+    <string name="photo_hint">Point at a monument, building or painting — the app will try to recognise it.</string>
+    <string name="photo_identifying">Recognising the photo…</string>
+    <string name="photo_result_title">This looks like</string>
+    <string name="photo_maybe">Not fully sure — a possible match</string>
+    <string name="photo_more">Details</string>
+    <string name="photo_unavailable">Photo search needs the proxy server with an AI key (see README).</string>
+    <string name="photo_not_found">Couldn\'t recognise it. Try a closer, sharper photo.</string>
+    <string name="photo_failed">Photo search failed. Try again later.</string>
 </resources>

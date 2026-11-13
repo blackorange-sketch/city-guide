@@ -142,4 +142,24 @@
     <string name="fact_style">Stil</string>
     <string name="fact_heritage">Denkmalstatus</string>
     <string name="fact_height">Höhe</string>
+    <string name="cat_entertainment">Unterhaltung</string>
+    <string name="tickets">Tickets</string>
+    <string name="tickets_title">Tickets &amp; Eintritt</string>
+    <string name="tickets_official">Offizielle Website</string>
+    <string name="tickets_gyg">GetYourGuide</string>
+    <string name="tickets_tiqets">Tiqets</string>
+    <string name="tickets_search">Im Web suchen</string>
+    <string name="tickets_note">Tickets verkauft der jeweilige Anbieter; die App nimmt keine Zahlungen an.</string>
+    <string name="tickets_query">Tickets</string>
+    <string name="photo_search">Suche per Foto</string>
+    <string name="photo_camera">Foto aufnehmen</string>
+    <string name="photo_gallery">Aus Galerie wählen</string>
+    <string name="photo_hint">Foto eines Denkmals, Gebäudes oder Gemäldes — die App versucht es zu erkennen.</string>
+    <string name="photo_identifying">Erkenne das Foto…</string>
+    <string name="photo_result_title">Das sieht aus wie</string>
+    <string name="photo_maybe">Nicht sicher — mögliche Übereinstimmung</string>
+    <string name="photo_more">Details</string>
+    <string name="photo_unavailable">Die Fotosuche braucht den Proxy-Server mit KI-Schlüssel (siehe README).</string>
+    <string name="photo_not_found">Nicht erkannt. Versuchen Sie ein schärferes Foto aus der Nähe.</string>
+    <string name="photo_failed">Die Fotosuche ist fehlgeschlagen. Später erneut versuchen.</string>
 </resources>

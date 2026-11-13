@@ -5,6 +5,7 @@ package com.cityguide.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -109,7 +110,12 @@ private fun kmLabel(km: Double): String =
 
 internal fun openUrl(context: Context, url: String) {
     val full = if (url.startsWith("http")) url else "https://$url"
-    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(full))) }
+    val uri = Uri.parse(full)
+    // Спершу вбудований браузер (Custom Tabs), інакше звичайний перегляд
+    val opened = runCatching { CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, uri) }
+    if (opened.isFailure) {
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+    }
 }
 
 @Composable
@@ -210,7 +216,8 @@ fun PlaceContent(
     loading: Boolean,
     onAdd: () -> Unit,
     onMore: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    city: String = ""
 ) {
     val context = LocalContext.current
     val imageLoader = rememberImageLoader()
@@ -224,7 +231,7 @@ fun PlaceContent(
                 fontWeight = FontWeight.Bold
             )
             val categoryName = stringResource(place.category.labelRes)
-            val subtitle = if (place.category == Category.FOOD) {
+            val subtitle = if (place.category == Category.FOOD || place.category == Category.ENTERTAINMENT) {
                 categoryName
             } else {
                 stringResource(R.string.place_sub_wiki, categoryName, place.score)
@@ -322,6 +329,9 @@ fun PlaceContent(
             kind = if (canAdd) ButtonKind.OUTLINED else ButtonKind.FILLED,
             modifier = Modifier.weight(1f)
         )
+    }
+    if (ticketsRelevant(place)) {
+        TicketsButton(place, city, Modifier.fillMaxWidth())
     }
 }
 
