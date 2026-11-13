@@ -63,7 +63,9 @@ data class WikiInfo(
     val description: String?,
     val sitelinks: Int,
     val wikiTitle: String?,
-    val wikiLang: String?
+    val wikiLang: String?,
+    /** Англійський опис (для відсіювання адміністративних одиниць, регіонів тощо). */
+    val descriptionEn: String? = null
 )
 
 /** Результат одного запиту: визначні місця й заклади харчування. */
@@ -651,7 +653,7 @@ object Api {
     @Volatile
     private var wikiCacheLoaded = false
 
-    private fun wikiCacheFile(): File? = cacheDir?.let { File(it, "wikidata-cache-v1.json") }
+    private fun wikiCacheFile(): File? = cacheDir?.let { File(it, "wikidata-cache-v2.json") }
 
     @Synchronized
     private fun loadWikiCache() {
@@ -668,7 +670,8 @@ object Api {
                         description = o["d"]?.jsonPrimitive?.contentOrNull,
                         sitelinks = o["s"]?.jsonPrimitive?.intOrNull ?: 0,
                         wikiTitle = o["t"]?.jsonPrimitive?.contentOrNull,
-                        wikiLang = o["w"]?.jsonPrimitive?.contentOrNull
+                        wikiLang = o["w"]?.jsonPrimitive?.contentOrNull,
+                        descriptionEn = o["e"]?.jsonPrimitive?.contentOrNull
                     ),
                     o["ts"]?.jsonPrimitive?.longOrNull ?: 0L
                 )
@@ -691,6 +694,7 @@ object Api {
                         put("s", cached.info.sitelinks)
                         cached.info.wikiTitle?.let { put("t", it) }
                         cached.info.wikiLang?.let { put("w", it) }
+                        cached.info.descriptionEn?.let { put("e", it) }
                         put("ts", cached.ts)
                     }
                 }
@@ -772,7 +776,8 @@ object Api {
                 description = o.localized("descriptions", lang),
                 sitelinks = sitelinks?.size ?: 0,
                 wikiTitle = page?.get("title")?.jsonPrimitive?.contentOrNull,
-                wikiLang = if (local != null) lang else "en"
+                wikiLang = if (local != null) lang else "en",
+                descriptionEn = o.localized("descriptions", "en")
             )
         }
         return result

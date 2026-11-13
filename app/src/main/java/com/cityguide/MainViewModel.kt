@@ -349,11 +349,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val city = s.city ?: return
         launchLoading(str(R.string.status_building_route)) {
-            val chosen = RoutePlanner.pick(
-                s.places, s.categories, RoutePlanner.stopsForDuration(s.durationMin)
+            val chosen = RoutePlanner.plan(
+                s.places, s.categories, s.durationMin, s.start ?: city.pos, s.start != null
             )
             if (chosen.size < 2) error(str(R.string.err_few_places))
-            recompute(RoutePlanner.order(s.start ?: city.pos, chosen, s.start != null))
+            recompute(chosen)
         }
     }
 
@@ -701,8 +701,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val places = around.sights
             // Місця лише з геопошуку Вікіпедії беремо, якщо вони достатньо відомі
             .filter { r ->
-                r.tags[Api.WIKI_ONLY_TAG] == null ||
-                    (r.wikidataId?.let { info[it]?.sitelinks } ?: 0) >= MIN_WIKI_ONLY_SITELINKS
+                if (r.tags[Api.WIKI_ONLY_TAG] == null) return@filter true
+                val wiki = r.wikidataId?.let { info[it] }
+                // З геопошуку Вікіпедії лише достатньо відомі об'єкти, без адмінодиниць і природних зон
+                (wiki?.sitelinks ?: 0) >= MIN_WIKI_ONLY_SITELINKS &&
+                    wiki?.descriptionEn?.let { ADMIN_DESCRIPTION.containsMatchIn(it) } != true
             }
             .mapNotNull { toPlace(it, it.wikidataId?.let { id -> info[id] }) }
             .sortedByDescending { it.score }
@@ -799,6 +802,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 600
+        val ADMIN_DESCRIPTION = Regex(
+            "municipality|county|gmina|commune|district|voivodeship|province|region|\\b(city|town) (in|of|and|with|on)\\b|^(city|town)\\b|" +
+                "village|settlement|locality|hamlet|borough|neighbou?rhood|suburb|country|" +
+                "national park|nature reserve|landscape park|protected area|river|lake|island|forest",
+            RegexOption.IGNORE_CASE
+        )
         val INFO_TAG_KEYS = setOf(
             "opening_hours", "phone", "contact:phone", "email", "contact:email", "cuisine",
             "outdoor_seating", "takeaway", "delivery", "diet:vegetarian", "wheelchair", "fee",

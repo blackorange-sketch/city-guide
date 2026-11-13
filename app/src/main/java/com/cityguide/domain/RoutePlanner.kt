@@ -105,6 +105,56 @@ object RoutePlanner {
 
     // --- підбір і порядок ---
 
+    private const val VISIT_MIN = 10
+    private const val WALK_KMH = 4.5
+    /** Пряма відстань менша за реальну пішу: запас на вигини вулиць. */
+    private const val DETOUR = 1.3
+
+    private fun pathLength(origin: LatLon, stops: List<Place>, fixedStart: Boolean): Double {
+        var length = 0.0
+        var prev: LatLon? = if (fixedStart) origin else null
+        for (p in stops) {
+            prev?.let { length += Geo.distance(it, p.pos) }
+            prev = p.pos
+        }
+        return length
+    }
+
+    /**
+     * Маршрут, що вміщається в заданий час: ~10 хв на огляд кожної зупинки, решта на ходьбу (4,5 км/год).
+     * Місця вибираються за значущістю з поправкою на близькість до [origin], далі зайві зупинки
+     * прибираються, поки орієнтовна довжина шляху не вкладеться в бюджет часу. Повертає впорядкований список.
+     */
+    fun plan(
+        places: List<Place>,
+        categories: Set<Category>,
+        durationMin: Int,
+        origin: LatLon,
+        fixedStart: Boolean
+    ): List<Place> {
+        val count = stopsForDuration(durationMin)
+        val walkMin = (durationMin - VISIT_MIN * count).coerceAtLeast(20)
+        val budgetM = walkMin / 60.0 * WALK_KMH * 1000.0
+        val maxFromOrigin = (budgetM / 2).coerceAtLeast(800.0)
+
+        val pool = places.filter { categories.isEmpty() || it.category in categories }
+        val near = pool.filter { Geo.distance(origin, it.pos) <= maxFromOrigin }
+        val candidates = if (near.size >= 2) near
+        else pool.sortedBy { Geo.distance(origin, it.pos) }.take(count.coerceAtLeast(2))
+
+        val chosen = candidates
+            .sortedByDescending { it.score / (1.0 + Geo.distance(origin, it.pos) / 1000.0) }
+            .take(count)
+        var ordered = order(origin, chosen, fixedStart)
+        while (ordered.size > 2 && pathLength(origin, ordered, fixedStart) * DETOUR > budgetM) {
+            val drop = ordered.indices.minBy { i ->
+                pathLength(origin, ordered.filterIndexed { j, _ -> j != i }, fixedStart)
+            }
+            ordered = order(origin, ordered.filterIndexed { j, _ -> j != drop }, fixedStart)
+        }
+        return ordered
+    }
+
     /** Найзначущіші місця обраних категорій (порожній набір = усі категорії). */
     fun pick(places: List<Place>, categories: Set<Category>, count: Int): List<Place> =
         places
