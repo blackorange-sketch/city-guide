@@ -780,8 +780,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val places = around.sights
             // Місця лише з геопошуку Вікіпедії беремо, якщо вони достатньо відомі
             .filter { r ->
-                if (r.tags[Api.WIKI_ONLY_TAG] == null) return@filter true
                 val wiki = r.wikidataId?.let { info[it] }
+                // Дороги, повіти, битви тощо — не місця для відвідування, звідки б вони не прийшли
+                if (wiki?.descriptionEn?.let { NON_PLACE_DESCRIPTION.containsMatchIn(it) } == true) return@filter false
+                if (r.tags[Api.WIKI_ONLY_TAG] == null) return@filter true
                 // З геопошуку Вікіпедії лише достатньо відомі об'єкти, без адмінодиниць і природних зон
                 (wiki?.sitelinks ?: 0) >= MIN_WIKI_ONLY_SITELINKS &&
                     wiki?.descriptionEn?.let { ADMIN_DESCRIPTION.containsMatchIn(it) } != true
@@ -897,6 +899,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 600
         const val ENTERTAINMENT_BASE_SCORE = 1
+        val NON_PLACE_DESCRIPTION = Regex(
+            "\\b(national|state|provincial|regional|county|local)? ?(road|route|highway|motorway|expressway|freeway)\\b|" +
+                "^street\\b|^(powiat|county|gmina|district)\\b|\\bbattle\\b|\\bsiege\\b|\\bcampaign\\b|" +
+                "\\buprising\\b|\\bmassacre\\b|\\btreaty\\b|\\boperation\\b|railway line|railway station",
+            RegexOption.IGNORE_CASE
+        )
         val ADMIN_DESCRIPTION = Regex(
             "municipality|county|gmina|commune|district|voivodeship|province|region|\\b(city|town) (in|of|and|with|on)\\b|^(city|town)\\b|" +
                 "village|settlement|locality|hamlet|borough|neighbou?rhood|suburb|country|" +
