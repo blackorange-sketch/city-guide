@@ -69,6 +69,7 @@ private const val MANEUVER_SRC = "maneuver-src"
 private const val SELECTED_SRC = "selected-src"
 private const val USER_SRC = "user-src"
 private const val START_SRC = "start-src"
+private const val TRANSIT_SRC = "transit-src"
 private const val GREEN = "#2E7D32"
 private const val EMPTY_FC = """{"type":"FeatureCollection","features":[]}"""
 
@@ -219,6 +220,7 @@ fun MapPane(
         val (traveled, remaining) = routeSplit(route, nav)
         style.getSourceAs<GeoJsonSource>(TRAVELED_SRC)?.setGeoJson(lineJson(traveled))
         style.getSourceAs<GeoJsonSource>(ROUTE_SRC)?.setGeoJson(lineJson(remaining))
+        style.getSourceAs<GeoJsonSource>(TRANSIT_SRC)?.setGeoJson(transitJson(route))
         style.getSourceAs<GeoJsonSource>(STOPS_SRC)?.setGeoJson(stopsJson(route, nav))
         style.getSourceAs<GeoJsonSource>(MANEUVER_SRC)?.setGeoJson(maneuversJson(route, nav))
         style.getSourceAs<GeoJsonSource>(USER_SRC)?.setGeoJson(userJson(nav))
@@ -284,6 +286,7 @@ private fun installLayers(style: Style, dark: Boolean, startLabel: String) {
     style.addSource(GeoJsonSource(SELECTED_SRC, EMPTY_FC))
     style.addSource(GeoJsonSource(USER_SRC, EMPTY_FC))
     style.addSource(GeoJsonSource(START_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(TRANSIT_SRC, EMPTY_FC))
 
     // Пройдений відрізок (сірий) під активним маршрутом
     style.addLayer(
@@ -299,6 +302,15 @@ private fun installLayers(style: Style, dark: Boolean, startLabel: String) {
             PropertyFactory.lineColor(Color.parseColor(if (dark) "#26C6B0" else TEAL)),
             PropertyFactory.lineWidth(6f),
             PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+            PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+        )
+    )
+    // Ділянки, де треба їхати громадським транспортом: фіолетова лінія поверх маршруту
+    style.addLayer(
+        LineLayer("transit-layer", TRANSIT_SRC).withProperties(
+            PropertyFactory.lineColor(Color.parseColor(if (dark) "#CE93D8" else "#7B1FA2")),
+            PropertyFactory.lineWidth(6f),
+            PropertyFactory.lineDasharray(arrayOf(2f, 1.5f)),
             PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
         )
     )
@@ -511,6 +523,27 @@ private fun routeSplit(route: Route?, nav: NavState): Pair<List<LatLon>, List<La
     val traveled = geometry.subList(0, i + 1) + snapped
     val remaining = listOf(snapped) + geometry.subList(i + 1, geometry.size)
     return traveled to remaining
+}
+
+private fun transitJson(route: Route?): String {
+    val lines = route?.transit.orEmpty().flatMap { leg -> leg.segments.map { it.geometry } }
+        .filter { it.size >= 2 }
+    if (lines.isEmpty()) return EMPTY_FC
+    val features = lines.map { points ->
+        buildJsonObject {
+            put("type", "Feature")
+            putJsonObject("geometry") {
+                put("type", "LineString")
+                putJsonArray("coordinates") {
+                    points.forEach { p ->
+                        add(JsonArray(listOf(JsonPrimitive(p.lon), JsonPrimitive(p.lat))))
+                    }
+                }
+            }
+            putJsonObject("properties") {}
+        }
+    }
+    return featureCollection(features)
 }
 
 private fun lineJson(points: List<LatLon>): String {

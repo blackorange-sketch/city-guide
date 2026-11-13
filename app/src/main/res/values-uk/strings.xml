@@ -164,4 +164,7 @@
     <string name="photo_failed">Пошук за фото не вдався. Спробуйте пізніше.</string>
     <string name="map_style">Стиль карти</string>
     <string name="point_name">Вибрана точка</string>
+    <string name="plan_transit">Громадський транспорт на довгих переходах</string>
+    <string name="transit_info">%1$s (пішки: %2$s)</string>
+    <string name="transit_transfers">пересадок: %1$d</string>
 </resources>

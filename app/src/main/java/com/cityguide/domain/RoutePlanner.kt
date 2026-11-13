@@ -117,6 +117,7 @@ object RoutePlanner {
     // --- підбір і порядок ---
 
     private const val VISIT_MIN = 10
+    private const val TRANSIT_BOOST = 1.7
     private const val WALK_KMH = 4.5
     /** Пряма відстань менша за реальну пішу: запас на вигини вулиць. */
     private const val DETOUR = 1.3
@@ -141,11 +142,13 @@ object RoutePlanner {
         categories: Set<Category>,
         durationMin: Int,
         origin: LatLon,
-        fixedStart: Boolean
+        fixedStart: Boolean,
+        transit: Boolean = false
     ): List<Place> {
         val count = stopsForDuration(durationMin)
         val walkMin = (durationMin - VISIT_MIN * count).coerceAtLeast(20)
-        val budgetM = walkMin / 60.0 * WALK_KMH * 1000.0
+        // З громадським транспортом довгі переходи долаються швидше, тож «пішого» бюджету більше
+        val budgetM = walkMin / 60.0 * WALK_KMH * 1000.0 * (if (transit) TRANSIT_BOOST else 1.0)
         val maxFromOrigin = (budgetM / 2).coerceAtLeast(800.0)
 
         val pool = places.filter { categories.isEmpty() || it.category in categories }

@@ -78,6 +78,7 @@ import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
 import com.cityguide.data.Route
+import com.cityguide.data.TransitLeg
 import kotlin.math.roundToInt
 
 private val RADIUS_OPTIONS_KM = listOf(1.0, 2.5, 5.0, 10.0)
@@ -389,6 +390,7 @@ fun PlanContent(s: UiState, vm: MainViewModel, onStartHere: () -> Unit) {
     SettingsCard {
         SwitchRow(stringResource(R.string.plan_extended), s.extended, !s.loading) { vm.setExtended(it) }
         SwitchRow(stringResource(R.string.plan_show_food), s.showFood, !s.loading) { vm.toggleFood() }
+        SwitchRow(stringResource(R.string.plan_transit), s.transit, !s.loading) { vm.setTransit(it) }
     }
 
     SectionLabel(stringResource(R.string.plan_start))
@@ -508,6 +510,45 @@ private fun StopRow(
     }
 }
 
+/** Емодзі виду транспорту (назви режимів MOTIS). */
+private fun transitEmoji(mode: String): String = when (mode) {
+    "BUS", "COACH" -> "🚌"
+    "TRAM", "CABLE_CAR" -> "🚋"
+    "SUBWAY", "METRO" -> "🚇"
+    "FERRY" -> "⛴"
+    "TROLLEYBUS" -> "🚎"
+    "AIRPLANE" -> "✈️"
+    else -> if (mode.contains("RAIL")) "🚆" else "🚍"
+}
+
+/** Плашка переходу громадським транспортом між зупинками: лінії, час, пересадки. */
+@Composable
+private fun TransitRow(leg: TransitLeg) {
+    val lines = leg.segments.joinToString(" → ") { transitEmoji(it.mode) + " " + it.line.ifBlank { "·" } }
+    val minutes = formatMinutes((leg.durationSec / 60).roundToInt().coerceAtLeast(1))
+    val walk = formatMinutes((leg.walkingSec / 60).roundToInt().coerceAtLeast(1))
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp, bottom = 2.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                lines,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Text(
+                stringResource(R.string.transit_info, minutes, walk) +
+                    if (leg.transfers > 0) " · " + stringResource(R.string.transit_transfers, leg.transfers) else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        }
+    }
+}
+
 @Composable
 fun RouteContent(
     route: Route,
@@ -529,6 +570,7 @@ fun RouteContent(
 
     Column(Modifier.animateContentSize(spring(stiffness = Spring.StiffnessMediumLow))) {
         route.stops.forEachIndexed { index, place ->
+            route.transit.firstOrNull { it.toStop == index }?.let { TransitRow(it) }
             key(place.id) {
                 AppearItem(index) {
                     StopRow(

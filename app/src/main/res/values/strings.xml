@@ -164,4 +164,7 @@
     <string name="photo_failed">Photo search failed. Try again later.</string>
     <string name="map_style">Map style</string>
     <string name="point_name">Selected point</string>
+    <string name="plan_transit">Use public transport for long legs</string>
+    <string name="transit_info">%1$s (on foot: %2$s)</string>
+    <string name="transit_transfers">transfers: %1$d</string>
 </resources>

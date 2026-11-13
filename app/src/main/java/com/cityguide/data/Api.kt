@@ -90,11 +90,24 @@ data class RatedPlace(
     val website: String?
 )
 
+/** Відрізок пішого маршруту між двома сусідніми точками. */
+data class LegInfo(val distance: Double, val duration: Double, val steps: List<Step>)
+
 data class RouteResult(
     val geometry: List<LatLon>,
     val distance: Double,
     val duration: Double,
-    val steps: List<Step>
+    val steps: List<Step>,
+    val legs: List<LegInfo> = emptyList()
+)
+
+/** Маршрут громадським транспортом між двома точками (Transitous / MOTIS). */
+data class TransitItinerary(
+    val durationSec: Double,
+    val transfers: Int,
+    val segments: List<TransitSegment>,
+    /** Повна лінія шляху (пішки до зупинки, поїздки, пішки від зупинки). */
+    val geometry: List<LatLon>
 )
 
 /** Результат розпізнавання фото (відповідь сервера-проксі). */
@@ -138,8 +151,10 @@ object Api {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(40, TimeUnit.SECONDS)
         .addInterceptor { chain ->
+            val request = chain.request()
             chain.proceed(
-                chain.request().newBuilder()
+                if (request.header("User-Agent") != null) request
+                else request.newBuilder()
                     .header("User-Agent", "CityGuide/0.3 (open-source prototype)")
                     .build()
             )
@@ -172,6 +187,7 @@ object Api {
     private const val MIRROR_STAGGER_MS = 2_000L
     private const val OVERPASS_TOTAL_TIMEOUT_MS = 30_000L
     private const val OVERPASS_TTL_MS = 24L * 60 * 60 * 1000
+    private const val TRANSIT_CACHE_MS = 15L * 60 * 1000
     private const val WIKI_TTL_MS = 14L * 24 * 60 * 60 * 1000
     private const val WIKI_CACHE_MAX = 8_000
     private const val FOOD_RADIUS_MAX_M = 5_000
@@ -958,8 +974,8 @@ object Api {
             val p = it.jsonArray
             LatLon(lat = p[1].jsonPrimitive.double, lon = p[0].jsonPrimitive.double)
         }
-        val steps = route["legs"]?.jsonArray.orEmpty().flatMap { leg ->
-            leg.jsonObject["steps"]?.jsonArray.orEmpty().mapNotNull { st ->
+        val legInfos = route["legs"]?.jsonArray.orEmpty().map { leg ->
+            val steps = leg.jsonObject["steps"]?.jsonArray.orEmpty().mapNotNull { st ->
                 val so = st.jsonObject
                 val maneuver = so["maneuver"] as? JsonObject ?: return@mapNotNull null
                 val loc = maneuver["location"]?.jsonArray ?: return@mapNotNull null
@@ -973,12 +989,114 @@ object Api {
                     exit = maneuver["exit"]?.jsonPrimitive?.intOrNull
                 )
             }
+            LegInfo(
+                distance = leg.jsonObject["distance"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                duration = leg.jsonObject["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                steps = steps
+            )
         }
         RouteResult(
             geometry = line,
             distance = route["distance"]!!.jsonPrimitive.double,
             duration = route["duration"]!!.jsonPrimitive.double,
-            steps = steps
+            steps = legInfos.flatMap { it.steps },
+            legs = legInfos
         )
+    }
+
+    // --- громадський транспорт (Transitous, MOTIS API v5) ---
+
+    private val transitCache = ConcurrentHashMap<String, Pair<Long, TransitItinerary?>>()
+
+    /**
+     * Найкращий маршрут громадським транспортом між точками на найближчий час.
+     * Повертає null, якщо транспорту немає, їхати не вигідно (лише піша ділянка) або сервіс недоступний.
+     * Transitous просить у User-Agent назву застосунку й контакт.
+     */
+    suspend fun transit(from: LatLon, to: LatLon): TransitItinerary? = withContext(Dispatchers.IO) {
+        val key = String.format(Locale.US, "%.4f,%.4f>%.4f,%.4f", from.lat, from.lon, to.lat, to.lon)
+        transitCache[key]?.let { (at, value) ->
+            if (System.currentTimeMillis() - at < TRANSIT_CACHE_MS) return@withContext value
+        }
+        val value = try {
+            val url = "https://api.transitous.org/api/v5/plan".toHttpUrl().newBuilder()
+                .addQueryParameter("fromPlace", "${from.lat},${from.lon}")
+                .addQueryParameter("toPlace", "${to.lat},${to.lon}")
+                .addQueryParameter("numItineraries", "1")
+                .addQueryParameter("maxTransfers", "3")
+                .build()
+            val request = Request.Builder().url(url)
+                .header("User-Agent", "CityGuide/0.4 (+https://github.com/blackorange-sketch/city-guide)")
+                .build()
+            parseTransit(execute(request).jsonObject)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        if (transitCache.size > 200) transitCache.clear()
+        transitCache[key] = System.currentTimeMillis() to value
+        value
+    }
+
+    private fun parseTransit(root: JsonObject): TransitItinerary? {
+        val it0 = root["itineraries"]?.jsonArray?.firstOrNull()?.jsonObject ?: return null
+        val duration = it0["duration"]?.jsonPrimitive?.doubleOrNull ?: return null
+        val legs = it0["legs"]?.jsonArray.orEmpty().map { it.jsonObject }
+        val full = mutableListOf<LatLon>()
+        val segments = mutableListOf<TransitSegment>()
+        for (leg in legs) {
+            val points = leg["legGeometry"]?.jsonObject?.let { g ->
+                decodePolyline(
+                    g["points"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    g["precision"]?.jsonPrimitive?.intOrNull ?: 6
+                )
+            }.orEmpty()
+            full += points
+            val mode = leg["mode"]?.jsonPrimitive?.contentOrNull ?: continue
+            if (mode == "WALK" || mode == "BIKE" || mode == "CAR") continue
+            val line = leg["routeShortName"]?.jsonPrimitive?.contentOrNull
+                ?: leg["displayName"]?.jsonPrimitive?.contentOrNull
+                ?: leg["routeLongName"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val seconds = leg["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+            segments += TransitSegment(mode, line, (seconds / 60).toInt().coerceAtLeast(1), points)
+        }
+        if (segments.isEmpty() || full.size < 2) return null
+        return TransitItinerary(
+            durationSec = duration,
+            transfers = it0["transfers"]?.jsonPrimitive?.intOrNull ?: (segments.size - 1).coerceAtLeast(0),
+            segments = segments,
+            geometry = full
+        )
+    }
+
+    /** Декодує закодовану лінію (Google polyline) із заданою точністю (MOTIS: 6 або 7 знаків). */
+    private fun decodePolyline(encoded: String, precision: Int): List<LatLon> {
+        val factor = Math.pow(10.0, precision.toDouble())
+        val out = mutableListOf<LatLon>()
+        var index = 0
+        var lat = 0L
+        var lon = 0L
+        while (index < encoded.length) {
+            var shift = 0
+            var result = 0L
+            var b: Int
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f).toLong() shl shift)
+                shift += 5
+            } while (b >= 0x20 && index < encoded.length)
+            lat += if (result and 1L != 0L) (result shr 1).inv() else result shr 1
+            shift = 0
+            result = 0L
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f).toLong() shl shift)
+                shift += 5
+            } while (b >= 0x20 && index < encoded.length)
+            lon += if (result and 1L != 0L) (result shr 1).inv() else result shr 1
+            out += LatLon(lat / factor, lon / factor)
+        }
+        return out
     }
 }

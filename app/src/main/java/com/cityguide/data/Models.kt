@@ -90,10 +90,31 @@ data class Step(
     val exit: Int?
 )
 
+/** Поїздка громадським транспортом у складі переходу: вид, лінія, тривалість і лінія на карті. */
+data class TransitSegment(
+    val mode: String,
+    val line: String,
+    val minutes: Int,
+    val geometry: List<LatLon>
+)
+
+/**
+ * Перехід між двома зупинками громадським транспортом замість ходьби.
+ * [toStop] — індекс зупинки, до якої веде перехід.
+ */
+data class TransitLeg(
+    val toStop: Int,
+    val durationSec: Double,
+    val walkingSec: Double,
+    val transfers: Int,
+    val segments: List<TransitSegment>
+)
+
 data class Route(
     val stops: List<Place>,
     val geometry: List<LatLon>,
     val distanceMeters: Double,
     val durationSeconds: Double,
-    val steps: List<Step> = emptyList()
+    val steps: List<Step> = emptyList(),
+    val transit: List<TransitLeg> = emptyList()
 )

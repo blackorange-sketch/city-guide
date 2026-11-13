@@ -164,4 +164,7 @@
     <string name="photo_failed">Die Fotosuche ist fehlgeschlagen. Später erneut versuchen.</string>
     <string name="map_style">Kartenstil</string>
     <string name="point_name">Gewählter Punkt</string>
+    <string name="plan_transit">Öffentlicher Nahverkehr auf langen Strecken</string>
+    <string name="transit_info">%1$s (zu Fuß: %2$s)</string>
+    <string name="transit_transfers">Umstiege: %1$d</string>
 </resources>

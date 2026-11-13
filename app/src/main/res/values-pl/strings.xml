@@ -164,4 +164,7 @@
     <string name="photo_failed">Wyszukiwanie po zdjęciu nie powiodło się. Spróbuj później.</string>
     <string name="map_style">Styl mapy</string>
     <string name="point_name">Wybrany punkt</string>
+    <string name="plan_transit">Transport publiczny na długich odcinkach</string>
+    <string name="transit_info">%1$s (pieszo: %2$s)</string>
+    <string name="transit_transfers">przesiadki: %1$d</string>
 </resources>

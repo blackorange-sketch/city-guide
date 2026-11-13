@@ -18,6 +18,8 @@ import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
 import com.cityguide.data.RawPlace
+import com.cityguide.data.RouteResult
+import com.cityguide.data.TransitLeg
 import com.cityguide.data.Route
 import com.cityguide.data.Suggestion
 import com.cityguide.data.WikiHit
@@ -30,6 +32,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -107,6 +111,8 @@ data class UiState(
     val pickingStart: Boolean = false,
     /** Макс. відстань закладу від лінії маршруту для «Обід поруч», м. */
     val foodMaxM: Int = 600,
+    /** Використовувати громадський транспорт на довгих переходах. */
+    val transit: Boolean = true,
     val route: Route? = null,
     val selected: Place? = null,
     val detail: PlaceDetail? = null,
@@ -438,11 +444,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         val city = s.city ?: return
         launchLoading(str(R.string.status_building_route)) {
+            val origin = s.start ?: city.pos
             val chosen = RoutePlanner.plan(
-                s.places, s.categories, s.durationMin, s.start ?: city.pos, s.start != null
+                s.places, s.categories, s.durationMin, origin, s.start != null, s.transit
             )
             if (chosen.size < 2) error(str(R.string.err_few_places))
             recompute(chosen)
+            // Транспорт не знайшовся, а маршрут задовгий: підбираємо наново, розраховуючи лише на ходьбу
+            val built = _state.value.route
+            if (s.transit && built != null &&
+                built.durationSeconds / 60 + 10 * built.stops.size > s.durationMin * 1.3
+            ) {
+                val walking = RoutePlanner.plan(
+                    s.places, s.categories, s.durationMin, origin, s.start != null, false
+                )
+                if (walking.size >= 2) recompute(walking)
+            }
         }
     }
 
@@ -501,9 +518,90 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun recompute(stops: List<Place>) {
         val points = listOfNotNull(_state.value.start) + stops.map { it.pos }
         val result = Api.route(points) ?: error(str(R.string.err_route_failed))
-        val route = Route(stops, result.geometry, result.distance, result.duration, result.steps)
+        var route = Route(stops, result.geometry, result.distance, result.duration, result.steps)
+        if (_state.value.transit) {
+            route = try {
+                withTransit(route, points, result, _state.value.start != null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                route
+            }
+        }
         _state.update { it.copy(route = route, selected = null, detail = null, status = null) }
     }
+
+    /**
+     * Довгі піші переходи (понад 1,5 км) замінює поїздкою громадським транспортом, якщо вона
+     * помітно швидша: у маршрут підставляється лінія поїздки, а підказки ходьби на цій ділянці прибираються.
+     */
+    private suspend fun withTransit(
+        route: Route,
+        points: List<LatLon>,
+        result: RouteResult,
+        hasStart: Boolean
+    ): Route {
+        val legs = result.legs
+        if (legs.isEmpty() || legs.size != points.size - 1) return route
+        val candidates = legs.indices.filter { legs[it].distance >= TRANSIT_MIN_M }.take(MAX_TRANSIT_LEGS)
+        if (candidates.isEmpty()) return route
+        val found = coroutineScope {
+            candidates.map { i ->
+                async { i to withTimeoutOrNull(TRANSIT_TIMEOUT_MS) { Api.transit(points[i], points[i + 1]) } }
+            }.awaitAll()
+        }
+        val accepted = found.mapNotNull { (i, itinerary) ->
+            if (itinerary != null && itinerary.durationSec <= legs[i].duration * 0.75) i to itinerary else null
+        }.toMap()
+        if (accepted.isEmpty()) return route
+
+        // Індекси точок маршруту в загальній лінії: кожна зупинка — вершина, найближча вперед від попередньої
+        val geo = result.geometry
+        val idx = IntArray(points.size)
+        for (k in 1 until points.size) {
+            var best = idx[k - 1]
+            var bestD = Double.MAX_VALUE
+            for (j in idx[k - 1] until geo.size) {
+                val d = Geo.distance(geo[j], points[k])
+                if (d < bestD) {
+                    bestD = d
+                    best = j
+                }
+            }
+            idx[k] = best
+        }
+        idx[points.lastIndex] = geo.lastIndex
+
+        val newGeo = ArrayList<LatLon>()
+        for (i in 0 until points.size - 1) {
+            newGeo.addAll(accepted[i]?.geometry ?: geo.subList(idx[i], idx[i + 1]))
+        }
+        newGeo.add(geo.last())
+
+        val steps = legs.filterIndexed { i, _ -> i !in accepted }.flatMap { it.steps }
+        var duration = result.duration
+        var distance = result.distance
+        val transitLegs = accepted.map { (i, t) ->
+            duration += t.durationSec - legs[i].duration
+            distance -= legs[i].distance
+            TransitLeg(
+                toStop = if (hasStart) i else i + 1,
+                durationSec = t.durationSec,
+                walkingSec = legs[i].duration,
+                transfers = t.transfers,
+                segments = t.segments
+            )
+        }.sortedBy { it.toStop }
+        return route.copy(
+            geometry = newGeo,
+            distanceMeters = distance.coerceAtLeast(0.0),
+            durationSeconds = duration,
+            steps = steps,
+            transit = transitLegs
+        )
+    }
+
+    fun setTransit(value: Boolean) = _state.update { it.copy(transit = value) }
 
     // --- навігація ---
 
@@ -662,7 +760,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             geometry = result.geometry,
                             distanceMeters = result.distance,
                             durationSeconds = result.duration,
-                            steps = result.steps
+                            steps = result.steps,
+                            transit = emptyList()
                         ),
                         nav = it.nav.copy(
                             rerouting = false, offRoute = false, snapSegment = 0,
@@ -909,6 +1008,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 600
+        const val TRANSIT_MIN_M = 1500.0
+        const val MAX_TRANSIT_LEGS = 6
+        const val TRANSIT_TIMEOUT_MS = 9_000L
         const val ENTERTAINMENT_BASE_SCORE = 1
         val NON_PLACE_DESCRIPTION = Regex(
             "\\b(national|state|provincial|regional|county|local)? ?(road|route|highway|motorway|expressway|freeway)\\b|" +
