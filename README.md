@@ -23,7 +23,11 @@ Kotlin, Jetpack Compose (Material 3), MapLibre Android SDK, OkHttp, kotlinx.seri
 
 Gradle wrapper у репозиторії не додано. Android Studio запропонує його створити, або виконайте `gradle wrapper --gradle-version 8.10.2`.
 
-**GitHub Actions** збирає debug APK при кожному push у `main`: завантажте його з вкладки Actions → останній запуск → Artifacts.
+**GitHub Actions** при кожному push у `main` збирає підписаний APK і публікує його в **Releases** (остання версія позначена Latest). Завантажуйте `CityGuide.apk` зі сторінки релізів.
+
+**Оновлення поверх:** усі збірки підписані одним ключем (`keystore/release.jks`), а `versionCode` дорівнює номеру запуску, тому нова версія встановлюється поверх старої без видалення.
+
+> Ключ лежить у відкритому репозиторії, це прийнятно лише для прототипу. Перед публічним релізом перенесіть його в GitHub Secrets і згенеруйте новий (старі збірки тоді доведеться перевстановити).
 
 ## Обмеження прототипу
 

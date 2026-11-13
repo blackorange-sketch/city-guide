@@ -12,13 +12,29 @@ android {
         applicationId = "com.cityguide"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // У CI versionCode береться з номера запуску, тож кожна збірка новіша за попередню
+        val build = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "0.1.$build"
+    }
+
+    signingConfigs {
+        // Фіксований ключ: усі збірки підписані однаково й встановлюються поверх одна одної
+        create("release") {
+            storeFile = rootProject.file("keystore/release.jks")
+            storePassword = "cityguide-pass"
+            keyAlias = "cityguide"
+            keyPassword = "cityguide-pass"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
