@@ -69,6 +69,11 @@ data class UiState(
     val radiusKm: Double = 2.5,
     val categories: Set<Category> = emptySet(),
     val durationMin: Int = 120,
+    /** Свій старт маршруту; null = авто (маршрут починається з першої зупинки). */
+    val start: LatLon? = null,
+    val pickingStart: Boolean = false,
+    /** Макс. відстань закладу від лінії маршруту для «Обід поруч», м. */
+    val foodMaxM: Int = 600,
     val route: Route? = null,
     val selected: Place? = null,
     val detail: PlaceDetail? = null,
@@ -149,6 +154,25 @@ class MainViewModel : ViewModel() {
 
     fun setDuration(minutes: Int) = _state.update { it.copy(durationMin = minutes) }
 
+    fun setFoodMax(meters: Int) = _state.update { it.copy(foodMaxM = meters) }
+
+    fun setStartAuto() = _state.update { it.copy(start = null, pickingStart = false) }
+
+    fun pickStartOnMap(on: Boolean) =
+        _state.update { it.copy(pickingStart = on, selected = null, detail = null) }
+
+    fun setStart(lat: Double, lon: Double) =
+        _state.update { it.copy(start = LatLon(lat, lon), pickingStart = false) }
+
+    /** Старт маршруту від поточного місцезнаходження; [provider] віддає (широта, довгота). */
+    fun useMyLocationAsStart(provider: suspend () -> Pair<Double, Double>?) {
+        launchLoading("Визначаю місцезнаходження…") {
+            val (lat, lon) = provider()
+                ?: error("Не вдалося визначити місцезнаходження. Перевірте, чи увімкнена геолокація")
+            _state.update { it.copy(start = LatLon(lat, lon), pickingStart = false, status = null) }
+        }
+    }
+
     fun toggleCategory(category: Category) = _state.update {
         val next = if (category in it.categories) it.categories - category else it.categories + category
         it.copy(categories = next)
@@ -202,7 +226,7 @@ class MainViewModel : ViewModel() {
                 s.places, s.categories, RoutePlanner.stopsForDuration(s.durationMin)
             )
             if (chosen.size < 2) error("Замало місць для маршруту. Оберіть більше категорій")
-            recompute(RoutePlanner.order(city.pos, chosen))
+            recompute(RoutePlanner.order(s.start ?: city.pos, chosen, s.start != null))
         }
     }
 
@@ -225,14 +249,14 @@ class MainViewModel : ViewModel() {
     fun addToRoute(place: Place) {
         val route = _state.value.route ?: return
         if (route.stops.any { it.id == place.id }) return
-        editStops(RoutePlanner.insertBest(route.stops, place))
+        editStops(RoutePlanner.insertBest(route.stops, place, _state.value.start))
     }
 
     fun optimizeOrder() {
         val s = _state.value
         val route = s.route ?: return
         val city = s.city ?: return
-        editStops(RoutePlanner.order(city.pos, route.stops))
+        editStops(RoutePlanner.order(s.start ?: city.pos, route.stops, s.start != null))
     }
 
     /** Додає заклад харчування біля середини маршруту. */
@@ -240,12 +264,12 @@ class MainViewModel : ViewModel() {
         val s = _state.value
         val route = s.route ?: return
         launchLoading("Шукаю заклад біля маршруту…") {
-            val food = RoutePlanner.lunchCandidate(route.stops, _state.value.foods)
-                ?: error("Поблизу середини маршруту не знайдено закладів")
-            val stops = route.stops.toMutableList()
-            stops.add((stops.size - 1) / 2 + 1, food)
+            val max = _state.value.foodMaxM
+            val food = RoutePlanner.lunchCandidate(
+                route.stops, _state.value.foods, route.geometry, max.toDouble()
+            ) ?: error("Не знайдено закладів ближче ніж $max м від маршруту. Збільште відстань")
             _state.update { it.copy(showFood = true) }
-            recompute(stops)
+            recompute(RoutePlanner.insertBest(route.stops, food, _state.value.start))
         }
     }
 
@@ -259,7 +283,8 @@ class MainViewModel : ViewModel() {
     }
 
     private suspend fun recompute(stops: List<Place>) {
-        val result = Api.route(stops.map { it.pos }) ?: error("Не вдалося побудувати маршрут")
+        val points = listOfNotNull(_state.value.start) + stops.map { it.pos }
+        val result = Api.route(points) ?: error("Не вдалося побудувати маршрут")
         val route = Route(stops, result.geometry, result.distance, result.duration, result.steps)
         _state.update { it.copy(route = route, selected = null, detail = null, status = null) }
     }
@@ -493,6 +518,7 @@ class MainViewModel : ViewModel() {
             it.copy(
                 city = city, route = null, selected = null, detail = null,
                 places = emptyList(), foods = emptyList(),
+                start = null, pickingStart = false,
                 status = "Завантажую місця та заклади…"
             )
         }

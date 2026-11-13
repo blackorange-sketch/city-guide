@@ -82,6 +82,7 @@ import com.cityguide.currentLocation
 import com.cityguide.locationUpdates
 import com.cityguide.data.Api
 import com.cityguide.data.Category
+import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
 import com.cityguide.data.Route
@@ -93,6 +94,7 @@ private val LOCATION_PERMISSIONS = arrayOf(
 )
 
 private val RADIUS_OPTIONS_KM = listOf(1.0, 2.5, 5.0, 10.0)
+private val FOOD_DISTANCE_OPTIONS_M = listOf(300, 600, 1000, 1500)
 
 @Composable
 fun MainScreen(vm: MainViewModel = viewModel()) {
@@ -112,6 +114,12 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
     }
 
     var wantNav by remember { mutableStateOf(false) }
+    var wantStart by remember { mutableStateOf(false) }
+
+    fun startFromMyLocation() {
+        val appContext = context.applicationContext
+        vm.useMyLocationAsStart { currentLocation(appContext)?.let { it.latitude to it.longitude } }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -119,11 +127,16 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
         when {
             !result.values.any { it } -> {
                 wantNav = false
+                wantStart = false
                 vm.showError("Немає дозволу на геолокацію")
             }
             wantNav -> {
                 wantNav = false
                 vm.startNavigation()
+            }
+            wantStart -> {
+                wantStart = false
+                startFromMyLocation()
             }
             else -> startLocate()
         }
@@ -136,6 +149,15 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
     val onLocateClick = {
         focus.clearFocus()
         if (hasLocationPermission()) startLocate() else permissionLauncher.launch(LOCATION_PERMISSIONS)
+    }
+
+    val onStartHere = {
+        if (hasLocationPermission()) {
+            startFromMyLocation()
+        } else {
+            wantStart = true
+            permissionLauncher.launch(LOCATION_PERMISSIONS)
+        }
     }
 
     val onStartNav = {
@@ -195,9 +217,12 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             route = route,
             selected = selected,
             nav = nav,
+            start = s.start,
+            pickingStart = s.pickingStart && !nav.active,
             topPaddingPx = searchBottom + (8 * density).toInt(),
             bottomPaddingPx = bottomPad + (8 * density).toInt(),
             onPlaceClick = { id -> if (!nav.active) vm.selectPlace(id) },
+            onMapPick = { lat, lon -> vm.setStart(lat, lon) },
             onUserPan = { if (nav.active) vm.setFollow(false) },
             modifier = Modifier.fillMaxSize()
         )
@@ -350,6 +375,18 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                     s.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     when {
                         nav.active && route != null -> NavContent(nav, route, vm)
+                        s.pickingStart -> {
+                            Text(
+                                "Торкніться карти, щоб обрати стартову точку",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            OutlinedButton(
+                                onClick = { vm.pickStartOnMap(false) },
+                                modifier = Modifier.fillMaxWidth().height(48.dp),
+                                shape = RoundedCornerShape(14.dp)
+                            ) { Text("Скасувати") }
+                        }
                         selected != null -> PlaceContent(
                             place = selected,
                             detail = s.detail,
@@ -359,8 +396,8 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                             onAdd = { vm.addToRoute(selected) },
                             onClose = vm::clearSelection
                         )
-                        route != null -> RouteContent(route, s.loading, vm, onStartNav)
-                        s.places.isNotEmpty() -> PlanContent(s, vm)
+                        route != null -> RouteContent(route, s.start, s.foodMaxM, s.loading, vm, onStartNav)
+                        s.places.isNotEmpty() -> PlanContent(s, vm, onStartHere)
                         s.error == null -> Text(
                             s.status ?: "Введіть місто або натисніть 📍, щоб знайти цікаві місця поруч",
                             style = MaterialTheme.typography.bodyMedium
@@ -484,7 +521,7 @@ private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean, onChang
 }
 
 @Composable
-private fun PlanContent(s: UiState, vm: MainViewModel) {
+private fun PlanContent(s: UiState, vm: MainViewModel, onStartHere: () -> Unit) {
     Text(
         "${s.city?.name.orEmpty()}: знайдено місць ${s.places.size}",
         style = MaterialTheme.typography.titleMedium,
@@ -525,6 +562,38 @@ private fun PlanContent(s: UiState, vm: MainViewModel) {
         "Показати заклади харчування на карті",
         s.showFood, !s.loading
     ) { vm.toggleFood() }
+    Text("Старт маршруту", style = MaterialTheme.typography.labelMedium)
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FilterChip(
+            selected = s.start == null,
+            enabled = !s.loading,
+            onClick = vm::setStartAuto,
+            label = { Text("Авто") }
+        )
+        FilterChip(
+            selected = false,
+            enabled = !s.loading,
+            onClick = onStartHere,
+            label = { Text("📍 Моє місце") }
+        )
+        FilterChip(
+            selected = false,
+            enabled = !s.loading,
+            onClick = { vm.pickStartOnMap(true) },
+            label = { Text("🗺 На карті") }
+        )
+    }
+    if (s.start != null) {
+        Text(
+            "Старт задано (зелена мітка на карті)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        )
+    }
+    FoodDistanceChips(s.foodMaxM, !s.loading, vm::setFoodMax)
     Text(
         "Тривалість прогулянки: ${formatMinutes(s.durationMin)}",
         style = MaterialTheme.typography.bodyMedium
@@ -546,8 +615,28 @@ private fun PlanContent(s: UiState, vm: MainViewModel) {
 }
 
 @Composable
+private fun FoodDistanceChips(value: Int, enabled: Boolean, onSelect: (Int) -> Unit) {
+    Text("Заклад поруч: не далі від маршруту", style = MaterialTheme.typography.labelMedium)
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        FOOD_DISTANCE_OPTIONS_M.forEach { m ->
+            FilterChip(
+                selected = value == m,
+                enabled = enabled,
+                onClick = { onSelect(m) },
+                label = { Text(if (m >= 1000) "${m / 1000.0} км".replace(".0", "") else "$m м") }
+            )
+        }
+    }
+}
+
+@Composable
 private fun RouteContent(
     route: Route,
+    start: LatLon?,
+    foodMaxM: Int,
     loading: Boolean,
     vm: MainViewModel,
     onStartNav: () -> Unit
@@ -634,6 +723,7 @@ private fun RouteContent(
         }
     }
 
+    FoodDistanceChips(foodMaxM, !loading, vm::setFoodMax)
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedButton(
             onClick = vm::optimizeOrder,
@@ -670,15 +760,17 @@ private fun RouteContent(
         ) { Text("▶ Навігація") }
     }
     TextButton(
-        onClick = { openUrl(context, googleMapsUrl(route)) },
+        onClick = { openUrl(context, googleMapsUrl(route, start)) },
         modifier = Modifier.fillMaxWidth()
     ) { Text("Відкрити в Google Maps") }
 }
 
-private fun googleMapsUrl(route: Route): String {
+private fun googleMapsUrl(route: Route, start: LatLon?): String {
     val first = route.stops.first()
     val last = route.stops.last()
-    val waypoints = route.stops.drop(1).dropLast(1).joinToString("|") { "${it.lat},${it.lon}" }
+    val origin = if (start != null) "${start.lat},${start.lon}" else "${first.lat},${first.lon}"
+    val middle = if (start != null) route.stops.dropLast(1) else route.stops.drop(1).dropLast(1)
+    val waypoints = middle.joinToString("|") { "${it.lat},${it.lon}" }
     return Uri.Builder()
         .scheme("https")
         .authority("www.google.com")
@@ -686,7 +778,7 @@ private fun googleMapsUrl(route: Route): String {
         .appendPath("dir")
         .appendPath("")
         .appendQueryParameter("api", "1")
-        .appendQueryParameter("origin", "${first.lat},${first.lon}")
+        .appendQueryParameter("origin", origin)
         .appendQueryParameter("destination", "${last.lat},${last.lon}")
         .apply { if (waypoints.isNotEmpty()) appendQueryParameter("waypoints", waypoints) }
         .appendQueryParameter("travelmode", "walking")

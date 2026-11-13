@@ -54,6 +54,8 @@ private const val STOPS_SRC = "stops-src"
 private const val MANEUVER_SRC = "maneuver-src"
 private const val SELECTED_SRC = "selected-src"
 private const val USER_SRC = "user-src"
+private const val START_SRC = "start-src"
+private const val GREEN = "#2E7D32"
 private const val EMPTY_FC = """{"type":"FeatureCollection","features":[]}"""
 
 private const val TEAL = "#00796B"
@@ -69,9 +71,12 @@ fun MapPane(
     route: Route?,
     selected: Place?,
     nav: NavState,
+    start: LatLon?,
+    pickingStart: Boolean,
     topPaddingPx: Int,
     bottomPaddingPx: Int,
     onPlaceClick: (String) -> Unit,
+    onMapPick: (Double, Double) -> Unit,
     onUserPan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -87,6 +92,8 @@ fun MapPane(
     val latestPlaces by rememberUpdatedState(places + foods)
     val latestOnClick by rememberUpdatedState(onPlaceClick)
     val latestOnPan by rememberUpdatedState(onUserPan)
+    val latestPicking by rememberUpdatedState(pickingStart)
+    val latestOnPick by rememberUpdatedState(onMapPick)
 
     DisposableEffect(lifecycle, mapView) {
         val observer = LifecycleEventObserver { _, event ->
@@ -111,6 +118,10 @@ fun MapPane(
 
             // Тап по карті: шукаємо найближче місце в межах ~28dp
             m.addOnMapClickListener { latLng ->
+                if (latestPicking) {
+                    latestOnPick(latLng.latitude, latLng.longitude)
+                    return@addOnMapClickListener true
+                }
                 val tap = m.projection.toScreenLocation(latLng)
                 val limit = density * 28f
                 val hit = latestPlaces
@@ -144,6 +155,7 @@ fun MapPane(
                 style.addSource(GeoJsonSource(MANEUVER_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(SELECTED_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(USER_SRC, EMPTY_FC))
+                style.addSource(GeoJsonSource(START_SRC, EMPTY_FC))
 
                 // Пройдений відрізок (сірий) під активним маршрутом
                 style.addLayer(
@@ -242,6 +254,28 @@ fun MapPane(
                         PropertyFactory.circleStrokeWidth(3f)
                     )
                 )
+                // Старт маршруту, заданий користувачем
+                style.addLayer(
+                    CircleLayer("start-layer", START_SRC).withProperties(
+                        PropertyFactory.circleRadius(10f),
+                        PropertyFactory.circleColor(Color.parseColor(GREEN)),
+                        PropertyFactory.circleStrokeColor(Color.WHITE),
+                        PropertyFactory.circleStrokeWidth(3f)
+                    )
+                )
+                style.addLayer(
+                    SymbolLayer("start-label-layer", START_SRC).withProperties(
+                        PropertyFactory.textField("Старт"),
+                        PropertyFactory.textSize(12f),
+                        PropertyFactory.textColor(Color.parseColor(GREEN)),
+                        PropertyFactory.textHaloColor(Color.WHITE),
+                        PropertyFactory.textHaloWidth(1.6f),
+                        PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                        PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
+                        PropertyFactory.textAllowOverlap(true)
+                    )
+                )
                 // Підписи з'являються при наближенні
                 style.addLayer(
                     SymbolLayer("labels-layer", PLACES_SRC).withProperties(
@@ -290,6 +324,13 @@ fun MapPane(
         style.getSourceAs<GeoJsonSource>(PLACES_SRC)?.setGeoJson(placesJson(places))
         style.getSourceAs<GeoJsonSource>(FOOD_SRC)?.setGeoJson(placesJson(foods))
         style.getSourceAs<GeoJsonSource>(SELECTED_SRC)?.setGeoJson(selectedJson(selected))
+    }
+
+    LaunchedEffect(styleReady, start) {
+        val style = map?.style ?: return@LaunchedEffect
+        val json = if (start == null) EMPTY_FC
+        else featureCollection(listOf(pointFeature(start.lat, start.lon)))
+        style.getSourceAs<GeoJsonSource>(START_SRC)?.setGeoJson(json)
     }
 
     // Маршрут, зупинки, повороти, користувач (оновлюється з кожним GPS-фіксом)
