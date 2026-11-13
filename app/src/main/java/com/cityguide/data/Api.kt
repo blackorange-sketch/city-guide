@@ -1,6 +1,8 @@
 package com.cityguide.data
 
 import android.content.Context
+import com.cityguide.BuildConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -72,6 +74,16 @@ data class AroundResult(
     val foodsUnavailable: Boolean = false
 )
 
+data class RatedPlace(
+    val id: String,
+    val name: String,
+    val lat: Double,
+    val lon: Double,
+    val rating: Double,
+    val price: Int?,
+    val website: String?
+)
+
 data class RouteResult(
     val geometry: List<LatLon>,
     val distance: Double,
@@ -113,6 +125,15 @@ object Api {
         "https://overpass.openstreetmap.fr/api/interpreter",
         "https://z.overpass-api.de/api/interpreter"
     )
+    /** Кеш-проксі (Cloudflare Worker) з BuildConfig; порожній рядок = працюємо напряму. */
+    private val PROXY: String = BuildConfig.PROXY_URL
+
+    /** Рейтинги закладів доступні лише через проксі (там зберігається ключ Foursquare). */
+    val hasRatings: Boolean get() = PROXY.isNotEmpty()
+
+    private val overpassEndpoints: List<String>
+        get() = (if (PROXY.isNotEmpty()) listOf("$PROXY/overpass") else emptyList()) + OVERPASS_ENDPOINTS
+
     private const val MIRROR_STAGGER_MS = 2_000L
     private const val OVERPASS_TOTAL_TIMEOUT_MS = 30_000L
     private const val OVERPASS_TTL_MS = 24L * 60 * 60 * 1000
@@ -206,7 +227,7 @@ object Api {
             withTimeout(OVERPASS_TOTAL_TIMEOUT_MS) {
                 firstSuccess(
                     MIRROR_STAGGER_MS,
-                    OVERPASS_ENDPOINTS.map { endpoint ->
+                    overpassEndpoints.map { endpoint ->
                         suspend {
                             val body = FormBody.Builder().add("data", query).build()
                             executeText(Request.Builder().url(endpoint).post(body).build())
@@ -431,6 +452,45 @@ object Api {
 
     const val WIKI_ONLY_TAG = "_wiki_only"
 
+    // --- рейтинги закладів (Foursquare через проксі) ---
+
+    private suspend fun fsqSearch(city: City, radiusM: Int, query: String): List<RatedPlace> {
+        val url = "$PROXY/fsq".toHttpUrl().newBuilder()
+            .addQueryParameter("ll", "${city.lat},${city.lon}")
+            .addQueryParameter("radius", min(radiusM, FOOD_RADIUS_MAX_M).toString())
+            .addQueryParameter("query", query)
+            .addQueryParameter("sort", "RATING")
+            .addQueryParameter("limit", "50")
+            .addQueryParameter("fields", "fsq_place_id,name,latitude,longitude,rating,price,website")
+            .build()
+        val results = execute(Request.Builder().url(url).build())
+            .jsonObject["results"]?.jsonArray.orEmpty()
+        return results.mapNotNull { r ->
+            val o = r.jsonObject
+            RatedPlace(
+                id = o["fsq_place_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                name = o["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                lat = o["latitude"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null,
+                lon = o["longitude"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null,
+                rating = o["rating"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null,
+                price = o["price"]?.jsonPrimitive?.intOrNull,
+                website = o["website"]?.jsonPrimitive?.contentOrNull
+            )
+        }
+    }
+
+    /** Найвище оцінені ресторани й кафе (порожньо, якщо проксі чи ключ не налаштовано). */
+    suspend fun fetchRated(city: City, radiusM: Int): List<RatedPlace> {
+        if (PROXY.isEmpty()) return emptyList()
+        return coroutineScope {
+            listOf("restaurant", "cafe")
+                .map { q -> async { runCatching { fsqSearch(city, radiusM, q) }.getOrDefault(emptyList()) } }
+                .awaitAll()
+                .flatten()
+                .distinctBy { it.id }
+        }
+    }
+
     // --- Wikidata / Wikipedia ---
 
     private data class CachedWiki(val info: WikiInfo, val ts: Long)
@@ -523,7 +583,24 @@ object Api {
         }
 
     private suspend fun fetchWikidataChunk(ids: List<String>, lang: String): Map<String, WikiInfo> {
-        val url = "https://www.wikidata.org/w/api.php".toHttpUrl().newBuilder()
+        if (PROXY.isNotEmpty()) {
+            try {
+                return fetchWikidataChunkFrom("$PROXY/wikidata", ids, lang)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // проксі недоступний: йдемо напряму
+            }
+        }
+        return fetchWikidataChunkFrom("https://www.wikidata.org/w/api.php", ids, lang)
+    }
+
+    private suspend fun fetchWikidataChunkFrom(
+        base: String,
+        ids: List<String>,
+        lang: String
+    ): Map<String, WikiInfo> {
+        val url = base.toHttpUrl().newBuilder()
             .addQueryParameter("action", "wbgetentities")
             .addQueryParameter("ids", ids.joinToString("|"))
             .addQueryParameter("props", "sitelinks|labels|descriptions")

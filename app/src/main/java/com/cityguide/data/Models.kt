@@ -40,7 +40,10 @@ data class Place(
     val wikiTitle: String? = null,
     val wikiLang: String? = null,
     val website: String? = null,
-    val hours: String? = null
+    val hours: String? = null,
+    /** Рейтинг закладу (0-10, Foursquare) і цінова категорія 1-4, якщо відомі. */
+    val rating: Double? = null,
+    val price: Int? = null
 ) {
     val pos: LatLon get() = LatLon(lat, lon)
 }

@@ -5,6 +5,7 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.cityguide.data.Api
+import com.cityguide.data.AroundResult
 import com.cityguide.data.Category
 import com.cityguide.data.City
 import com.cityguide.data.HttpException
@@ -544,7 +545,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val extended = _state.value.extended
         val limit = if (extended) MAX_PLACES_EXTENDED else MAX_PLACES
-        val around = Api.fetchAround(city, radiusM(), extended, lang)
+        val fullRadius = radiusM()
+
+        // Великий радіус вантажимо порціями: спершу центр (швидко), потім весь радіус
+        if (fullRadius > QUICK_RADIUS_M) {
+            val quick = try {
+                Api.fetchAround(city, QUICK_RADIUS_M, extended, lang)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (quick != null) publish(quick, limit, strict = false)
+        }
+        val around = Api.fetchAround(city, fullRadius, extended, lang)
+        publish(around, limit, strict = true)
+        if (Api.hasRatings) viewModelScope.launch { mergeRatings(city) }
+    }
+
+    /** Показує завантажені дані: спершу попередній список, потім з оцінкою значущості. */
+    private suspend fun publish(around: AroundResult, limit: Int, strict: Boolean) {
 
         val foods = around.foods.map { toFood(it) }.sortedByDescending { it.score }.take(MAX_FOOD)
         // Попередній список без місць з Вікіпедії, чия значущість ще невідома
@@ -571,13 +591,73 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .mapNotNull { toPlace(it, it.wikidataId?.let { id -> info[id] }) }
             .sortedByDescending { it.score }
             .take(limit)
-        if (places.isEmpty()) error(str(R.string.err_no_places))
+        if (places.isEmpty()) {
+            if (strict) error(str(R.string.err_no_places))
+            return
+        }
         _state.update {
             it.copy(
                 places = places,
                 status = null,
                 error = if (around.foodsUnavailable) str(R.string.err_food_unavailable) else it.error
             )
+        }
+    }
+
+    private fun sameName(a: String, b: String): Boolean {
+        fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+        val x = norm(a)
+        val y = norm(b)
+        return x.length >= 3 && y.length >= 3 && (x.contains(y) || y.contains(x))
+    }
+
+    /** Додає рейтинги Foursquare до закладів OSM (за назвою й відстанню) та нові високооцінені місця. */
+    private suspend fun mergeRatings(city: City) {
+        val rated = try {
+            Api.fetchRated(city, radiusM())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return
+        }
+        if (rated.isEmpty()) return
+        _state.update { cur ->
+            if (cur.city != city) return@update cur
+            val foods = cur.foods.toMutableList()
+            for (r in rated) {
+                val label = "★ " + "%.1f".format(r.rating) + (r.price?.let { " · " + "$".repeat(it) } ?: "")
+                val score = FSQ_SCORE_BASE + (r.rating * 5).toInt()
+                val idx = foods.indexOfFirst {
+                    Geo.distance(it.pos, LatLon(r.lat, r.lon)) < 70.0 && sameName(it.name, r.name)
+                }
+                if (idx >= 0) {
+                    val old = foods[idx]
+                    foods[idx] = old.copy(
+                        description = listOfNotNull(label, old.description).joinToString(" · "),
+                        score = score,
+                        rating = r.rating,
+                        price = r.price,
+                        website = old.website ?: r.website
+                    )
+                } else {
+                    foods.add(
+                        Place(
+                            id = "fsq/${r.id}",
+                            wikidataId = null,
+                            name = r.name,
+                            description = label,
+                            lat = r.lat,
+                            lon = r.lon,
+                            category = Category.FOOD,
+                            score = score,
+                            website = r.website,
+                            rating = r.rating,
+                            price = r.price
+                        )
+                    )
+                }
+            }
+            cur.copy(foods = foods.sortedByDescending { it.score }.take(MAX_FOOD))
         }
     }
 
@@ -603,6 +683,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 120
+        const val QUICK_RADIUS_M = 1500
+        const val FSQ_SCORE_BASE = 20
         const val MIN_WIKI_ONLY_SITELINKS = 4
         const val ARRIVE_RADIUS_M = 35.0
         const val ANNOUNCE_DISTANCE_M = 150.0

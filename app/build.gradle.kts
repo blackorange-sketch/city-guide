@@ -16,6 +16,9 @@ android {
         val build = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
         versionCode = build
         versionName = "0.1.$build"
+        // Адреса кеш-проксі (Cloudflare Worker, див. proxy/README.md); порожня = без проксі
+        val proxy = ((project.findProperty("proxyUrl") as String?) ?: "").trim().trimEnd('/')
+        buildConfigField("String", "PROXY_URL", "\"$proxy\"")
     }
 
     signingConfigs {
@@ -49,6 +52,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
