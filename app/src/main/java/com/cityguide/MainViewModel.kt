@@ -1,10 +1,13 @@
 package com.cityguide
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.annotation.StringRes
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.cityguide.data.Api
 import com.cityguide.data.Category
 import com.cityguide.data.City
+import com.cityguide.data.HttpException
 import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
@@ -24,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.IOException
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -80,10 +84,20 @@ data class UiState(
     val nav: NavState = NavState()
 )
 
-class MainViewModel : ViewModel() {
+class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    private fun str(@StringRes id: Int, vararg args: Any): String =
+        getApplication<Application>().getString(id, *args)
+
+    /** Текст помилки для користувача: власні помилки вже локалізовані, мережеві перекладаємо тут. */
+    private fun errorText(e: Exception): String = when (e) {
+        is HttpException -> str(R.string.err_http, e.code, e.host)
+        is IOException -> str(R.string.err_network)
+        else -> e.message ?: str(R.string.err_network)
+    }
 
     private val lang: String = Locale.getDefault().language.ifBlank { "en" }
     private var suggestJob: Job? = null
@@ -116,7 +130,7 @@ class MainViewModel : ViewModel() {
     fun selectSuggestion(suggestion: Suggestion) {
         suggestJob?.cancel()
         _state.update { it.copy(query = suggestion.name, suggestions = emptyList()) }
-        launchLoading("Завантажую визначні місця…") {
+        launchLoading(str(R.string.status_loading_places)) {
             loadPlaces(City(suggestion.name, suggestion.lat, suggestion.lon))
         }
     }
@@ -130,8 +144,8 @@ class MainViewModel : ViewModel() {
             selectSuggestion(first)
             return
         }
-        launchLoading("Шукаю місто…") {
-            val city = Api.geocode(query, lang) ?: error("Місто не знайдено")
+        launchLoading(str(R.string.status_searching_city)) {
+            val city = Api.geocode(query, lang) ?: error(str(R.string.err_city_not_found))
             loadPlaces(city)
         }
     }
@@ -139,16 +153,18 @@ class MainViewModel : ViewModel() {
     /** Пошук навколо поточного місцезнаходження; [provider] віддає (широта, довгота). */
     fun locate(provider: suspend () -> Pair<Double, Double>?) {
         suggestJob?.cancel()
-        launchLoading("Визначаю місцезнаходження…") {
+        launchLoading(str(R.string.status_locating)) {
             val (lat, lon) = provider()
-                ?: error("Не вдалося визначити місцезнаходження. Перевірте, чи увімкнена геолокація")
-            val name = Api.reverse(lat, lon, lang) ?: "Моє місцезнаходження"
+                ?: error(str(R.string.err_location_failed))
+            val name = Api.reverse(lat, lon, lang) ?: str(R.string.my_location_name)
             _state.update { it.copy(query = name, suggestions = emptyList()) }
             loadPlaces(City(name, lat, lon))
         }
     }
 
     fun showError(message: String) = _state.update { it.copy(error = message, status = null) }
+
+    fun dismissError() = _state.update { it.copy(error = null) }
 
     // --- налаштування пошуку ---
 
@@ -166,9 +182,9 @@ class MainViewModel : ViewModel() {
 
     /** Старт маршруту від поточного місцезнаходження; [provider] віддає (широта, довгота). */
     fun useMyLocationAsStart(provider: suspend () -> Pair<Double, Double>?) {
-        launchLoading("Визначаю місцезнаходження…") {
+        launchLoading(str(R.string.status_locating)) {
             val (lat, lon) = provider()
-                ?: error("Не вдалося визначити місцезнаходження. Перевірте, чи увімкнена геолокація")
+                ?: error(str(R.string.err_location_failed))
             _state.update { it.copy(start = LatLon(lat, lon), pickingStart = false, status = null) }
         }
     }
@@ -221,11 +237,11 @@ class MainViewModel : ViewModel() {
     fun buildRoute() {
         val s = _state.value
         val city = s.city ?: return
-        launchLoading("Будую маршрут…") {
+        launchLoading(str(R.string.status_building_route)) {
             val chosen = RoutePlanner.pick(
                 s.places, s.categories, RoutePlanner.stopsForDuration(s.durationMin)
             )
-            if (chosen.size < 2) error("Замало місць для маршруту. Оберіть більше категорій")
+            if (chosen.size < 2) error(str(R.string.err_few_places))
             recompute(RoutePlanner.order(s.start ?: city.pos, chosen, s.start != null))
         }
     }
@@ -263,11 +279,11 @@ class MainViewModel : ViewModel() {
     fun addLunch() {
         val s = _state.value
         val route = s.route ?: return
-        launchLoading("Шукаю заклад біля маршруту…") {
+        launchLoading(str(R.string.status_finding_lunch)) {
             val max = _state.value.foodMaxM
             val food = RoutePlanner.lunchCandidate(
                 route.stops, _state.value.foods, route.geometry, max.toDouble()
-            ) ?: error("Не знайдено закладів ближче ніж $max м від маршруту. Збільште відстань")
+            ) ?: error(str(R.string.err_no_food, max))
             _state.update { it.copy(showFood = true) }
             recompute(RoutePlanner.insertBest(route.stops, food, _state.value.start))
         }
@@ -279,12 +295,12 @@ class MainViewModel : ViewModel() {
 
     private fun reload() {
         val city = _state.value.city ?: return
-        launchLoading("Оновлюю місця…") { loadPlaces(city) }
+        launchLoading(str(R.string.status_refreshing)) { loadPlaces(city) }
     }
 
     private suspend fun recompute(stops: List<Place>) {
         val points = listOfNotNull(_state.value.start) + stops.map { it.pos }
-        val result = Api.route(points) ?: error("Не вдалося побудувати маршрут")
+        val result = Api.route(points) ?: error(str(R.string.err_route_failed))
         val route = Route(stops, result.geometry, result.distance, result.duration, result.steps)
         _state.update { it.copy(route = route, selected = null, detail = null, status = null) }
     }
@@ -303,7 +319,7 @@ class MainViewModel : ViewModel() {
     fun startNavigation() {
         val route = _state.value.route ?: return
         if (route.geometry.size < 2) {
-            showError("Маршрут занадто короткий для навігації")
+            showError(str(R.string.err_route_too_short))
             return
         }
         tracker = RouteTracker(route.geometry, route.steps, route.stops.map { it.pos }, 0)
@@ -317,7 +333,7 @@ class MainViewModel : ViewModel() {
                 nav = NavState(
                     active = true,
                     voice = it.nav.voice,
-                    announcement = announcement("Навігацію розпочато")
+                    announcement = announcement(str(R.string.nav_started))
                 )
             )
         }
@@ -357,11 +373,11 @@ class MainViewModel : ViewModel() {
         var finished = false
         val target = route.stops.getOrNull(nextStop)
         if (target != null && Geo.distance(user, target.pos) < ARRIVE_RADIUS_M) {
-            announce = announcement("Ви прибули: ${target.name}")
+            announce = announcement(str(R.string.nav_arrived, target.name))
             nextStop++
             if (nextStop >= route.stops.size) {
                 finished = true
-                announce = announcement("Маршрут завершено. Ви прибули: ${target.name}")
+                announce = announcement(str(R.string.nav_finished, target.name))
             }
         }
 
@@ -376,20 +392,23 @@ class MainViewModel : ViewModel() {
         if (stepIdx != null) {
             val step = tr.steps[stepIdx]
             arrow = Instructions.arrow(step)
-            instruction = Instructions.text(step)
+            instruction = Instructions.text(getApplication<Application>(), step)
             distManeuver = max(0.0, tr.stepAlong[stepIdx] - along)
             if (announce == null && distManeuver <= ANNOUNCE_DISTANCE_M && lastAnnouncedStep != stepIdx) {
                 lastAnnouncedStep = stepIdx
                 val meters = (distManeuver / 10).roundToInt() * 10
-                val text = instruction.replaceFirstChar { it.lowercase() }
-                announce = announcement(if (meters >= 20) "Через $meters метрів $text" else text)
+                val text = Instructions.text(getApplication<Application>(), step, capitalize = false)
+                announce = announcement(
+                    if (meters >= 20) str(R.string.nav_in_meters, meters, text)
+                    else text.replaceFirstChar { it.uppercase() }
+                )
             }
         } else if (nextTarget != null) {
-            instruction = "Прямуйте до: ${nextTarget.name}"
+            instruction = str(R.string.nav_head_to, nextTarget.name)
         }
         if (announce == null && nextTarget != null && distToStop <= 60.0 && lastAnnouncedStop != nextStop) {
             lastAnnouncedStop = nextStop
-            announce = announcement("Попереду: ${nextTarget.name}")
+            announce = announcement(str(R.string.nav_ahead, nextTarget.name))
         }
 
         val remaining = max(0.0, tr.length - along)
@@ -433,7 +452,7 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val result = Api.route(listOf(user) + remaining.map { it.pos })
-                    ?: error("Не вдалося перерахувати маршрут")
+                    ?: error(str(R.string.err_route_failed))
                 tracker = RouteTracker(result.geometry, result.steps, remaining.map { it.pos }, nextStop)
                 lastAnnouncedStep = -1
                 offRouteCount = 0
@@ -447,7 +466,7 @@ class MainViewModel : ViewModel() {
                         ),
                         nav = it.nav.copy(
                             rerouting = false, offRoute = false, snapSegment = 0,
-                            announcement = announcement("Маршрут перераховано")
+                            announcement = announcement(str(R.string.nav_rerouted))
                         )
                     )
                 }
@@ -461,7 +480,7 @@ class MainViewModel : ViewModel() {
 
     private fun editStops(stops: List<Place>) {
         if (stops.size < 2) {
-            showError("У маршруті має лишатися щонайменше 2 зупинки")
+            showError(str(R.string.err_min_stops))
             return
         }
         routeJob?.cancel()
@@ -472,7 +491,7 @@ class MainViewModel : ViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                showError(e.message ?: "Помилка мережі")
+                showError(errorText(e))
             } finally {
                 _state.update { it.copy(loading = false) }
             }
@@ -499,8 +518,8 @@ class MainViewModel : ViewModel() {
     private fun toFood(r: RawPlace) = Place(
         id = r.id,
         wikidataId = null,
-        name = r.name ?: "Заклад",
-        description = RoutePlanner.foodDescription(r.tags),
+        name = r.name ?: str(R.string.food_generic),
+        description = RoutePlanner.foodDescription(getApplication<Application>(), r.tags),
         lat = r.lat,
         lon = r.lon,
         category = Category.FOOD,
@@ -519,20 +538,20 @@ class MainViewModel : ViewModel() {
                 city = city, route = null, selected = null, detail = null,
                 places = emptyList(), foods = emptyList(),
                 start = null, pickingStart = false,
-                status = "Завантажую місця та заклади…"
+                status = str(R.string.status_loading_places)
             )
         }
         val extended = _state.value.extended
         val limit = if (extended) MAX_PLACES_EXTENDED else MAX_PLACES
         val around = Api.fetchAround(city, radiusM(), extended)
         if (around.sights.isEmpty()) {
-            error("Поблизу не знайдено місць. Збільште радіус або увімкніть розширений пошук")
+            error(str(R.string.err_no_places))
         }
 
         val foods = around.foods.map { toFood(it) }.sortedByDescending { it.score }.take(MAX_FOOD)
         val preliminary = around.sights.mapNotNull { toPlace(it, null) }.take(limit)
         _state.update {
-            it.copy(places = preliminary, foods = foods, status = "Оцінюю значущість місць…")
+            it.copy(places = preliminary, foods = foods, status = str(R.string.status_scoring))
         }
 
         val info = try {
@@ -559,7 +578,7 @@ class MainViewModel : ViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _state.update { it.copy(error = e.message ?: "Помилка мережі", status = null) }
+                _state.update { it.copy(error = errorText(e), status = null) }
             } finally {
                 _state.update { it.copy(loading = false) }
             }

@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -36,6 +37,7 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
@@ -45,7 +47,8 @@ import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import kotlin.math.hypot
 
-private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
+private const val STYLE_LIGHT = "https://tiles.openfreemap.org/styles/liberty"
+private const val STYLE_DARK = "https://tiles.openfreemap.org/styles/dark"
 private const val ROUTE_SRC = "route-src"
 private const val TRAVELED_SRC = "traveled-src"
 private const val PLACES_SRC = "places-src"
@@ -73,6 +76,7 @@ fun MapPane(
     nav: NavState,
     start: LatLon?,
     pickingStart: Boolean,
+    startLabel: String,
     topPaddingPx: Int,
     bottomPaddingPx: Int,
     onPlaceClick: (String) -> Unit,
@@ -88,7 +92,8 @@ fun MapPane(
         MapView(context)
     }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
-    var styleReady by remember { mutableStateOf(false) }
+    var styleVersion by remember { mutableIntStateOf(0) }
+    val dark = LocalDarkTheme.current
     val latestPlaces by rememberUpdatedState(places + foods)
     val latestOnClick by rememberUpdatedState(onPlaceClick)
     val latestOnPan by rememberUpdatedState(onUserPan)
@@ -146,166 +151,16 @@ fun MapPane(
                 }
             }
 
-            m.setStyle(STYLE_URL) { style ->
-                style.addSource(GeoJsonSource(TRAVELED_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(ROUTE_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(PLACES_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(FOOD_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(STOPS_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(MANEUVER_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(SELECTED_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(USER_SRC, EMPTY_FC))
-                style.addSource(GeoJsonSource(START_SRC, EMPTY_FC))
+            map = m
+        }
+    }
 
-                // Пройдений відрізок (сірий) під активним маршрутом
-                style.addLayer(
-                    LineLayer("traveled-layer", TRAVELED_SRC).withProperties(
-                        PropertyFactory.lineColor(Color.parseColor(GREY)),
-                        PropertyFactory.lineWidth(5f),
-                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                    )
-                )
-                style.addLayer(
-                    LineLayer("route-layer", ROUTE_SRC).withProperties(
-                        PropertyFactory.lineColor(Color.parseColor(TEAL)),
-                        PropertyFactory.lineWidth(6f),
-                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                    )
-                )
-                // Місця: колір залежить від категорії
-                style.addLayer(
-                    CircleLayer("places-layer", PLACES_SRC).withProperties(
-                        PropertyFactory.circleRadius(7f),
-                        PropertyFactory.circleColor(Expression.get("color")),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(2f)
-                    )
-                )
-                // Заклади харчування: менші маркери
-                style.addLayer(
-                    CircleLayer("food-layer", FOOD_SRC).withProperties(
-                        PropertyFactory.circleRadius(5.5f),
-                        PropertyFactory.circleColor(Expression.get("color")),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(2f)
-                    )
-                )
-                // Зупинки маршруту: колір залежить від стану (пройдена, наступна, попереду)
-                style.addLayer(
-                    CircleLayer("stops-layer", STOPS_SRC).withProperties(
-                        PropertyFactory.circleRadius(13f),
-                        PropertyFactory.circleColor(Expression.get("c")),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(2.5f)
-                    )
-                )
-                style.addLayer(
-                    SymbolLayer("numbers-layer", STOPS_SRC).withProperties(
-                        PropertyFactory.textField(Expression.get("n")),
-                        PropertyFactory.textSize(13f),
-                        PropertyFactory.textColor(Color.WHITE),
-                        PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
-                        PropertyFactory.textAllowOverlap(true),
-                        PropertyFactory.textIgnorePlacement(true)
-                    )
-                )
-                // Позначки поворотів
-                style.addLayer(
-                    CircleLayer("maneuver-layer", MANEUVER_SRC).withProperties(
-                        PropertyFactory.circleRadius(12f),
-                        PropertyFactory.circleColor(Color.WHITE),
-                        PropertyFactory.circleStrokeColor(Color.parseColor(TEAL)),
-                        PropertyFactory.circleStrokeWidth(2.5f)
-                    )
-                )
-                style.addLayer(
-                    SymbolLayer("maneuver-arrows-layer", MANEUVER_SRC).withProperties(
-                        PropertyFactory.textField(Expression.get("a")),
-                        PropertyFactory.textSize(15f),
-                        PropertyFactory.textColor(Color.parseColor(TEAL)),
-                        PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
-                        PropertyFactory.textAllowOverlap(true),
-                        PropertyFactory.textIgnorePlacement(true)
-                    )
-                )
-                style.addLayer(
-                    CircleLayer("selected-layer", SELECTED_SRC).withProperties(
-                        PropertyFactory.circleRadius(17f),
-                        PropertyFactory.circleColor(Color.TRANSPARENT),
-                        PropertyFactory.circleStrokeColor(Color.parseColor(ORANGE)),
-                        PropertyFactory.circleStrokeWidth(3.5f)
-                    )
-                )
-                // Положення користувача: напівпрозорий ореол і крапка
-                style.addLayer(
-                    CircleLayer("user-halo-layer", USER_SRC).withProperties(
-                        PropertyFactory.circleRadius(20f),
-                        PropertyFactory.circleColor(Color.parseColor(BLUE)),
-                        PropertyFactory.circleOpacity(0.25f)
-                    )
-                )
-                style.addLayer(
-                    CircleLayer("user-dot-layer", USER_SRC).withProperties(
-                        PropertyFactory.circleRadius(8f),
-                        PropertyFactory.circleColor(Color.parseColor(BLUE)),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(3f)
-                    )
-                )
-                // Старт маршруту, заданий користувачем
-                style.addLayer(
-                    CircleLayer("start-layer", START_SRC).withProperties(
-                        PropertyFactory.circleRadius(10f),
-                        PropertyFactory.circleColor(Color.parseColor(GREEN)),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(3f)
-                    )
-                )
-                style.addLayer(
-                    SymbolLayer("start-label-layer", START_SRC).withProperties(
-                        PropertyFactory.textField("Старт"),
-                        PropertyFactory.textSize(12f),
-                        PropertyFactory.textColor(Color.parseColor(GREEN)),
-                        PropertyFactory.textHaloColor(Color.WHITE),
-                        PropertyFactory.textHaloWidth(1.6f),
-                        PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
-                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
-                        PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
-                        PropertyFactory.textAllowOverlap(true)
-                    )
-                )
-                // Підписи з'являються при наближенні
-                style.addLayer(
-                    SymbolLayer("labels-layer", PLACES_SRC).withProperties(
-                        PropertyFactory.textField(Expression.get("name")),
-                        PropertyFactory.textSize(12f),
-                        PropertyFactory.textColor(Color.parseColor("#1B1F1E")),
-                        PropertyFactory.textHaloColor(Color.WHITE),
-                        PropertyFactory.textHaloWidth(1.6f),
-                        PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
-                        PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
-                        PropertyFactory.textOptional(true)
-                    ).apply { setMinZoom(14f) }
-                )
-                style.addLayer(
-                    SymbolLayer("food-labels-layer", FOOD_SRC).withProperties(
-                        PropertyFactory.textField(Expression.get("name")),
-                        PropertyFactory.textSize(11f),
-                        PropertyFactory.textColor(Color.parseColor("#5D4037")),
-                        PropertyFactory.textHaloColor(Color.WHITE),
-                        PropertyFactory.textHaloWidth(1.6f),
-                        PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
-                        PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
-                        PropertyFactory.textOffset(arrayOf(0f, 0.8f)),
-                        PropertyFactory.textOptional(true)
-                    ).apply { setMinZoom(15f) }
-                )
-                map = m
-                styleReady = true
-            }
+    // Стиль карти залежить від теми: після перемикання шари додаються заново
+    LaunchedEffect(map, dark) {
+        val m = map ?: return@LaunchedEffect
+        m.setStyle(if (dark) STYLE_DARK else STYLE_LIGHT) { style ->
+            installLayers(style, dark, startLabel)
+            styleVersion++
         }
     }
 
@@ -319,14 +174,14 @@ fun MapPane(
     }
 
     // Місця, заклади, вибране
-    LaunchedEffect(styleReady, places, foods, selected) {
+    LaunchedEffect(styleVersion, places, foods, selected) {
         val style = map?.style ?: return@LaunchedEffect
         style.getSourceAs<GeoJsonSource>(PLACES_SRC)?.setGeoJson(placesJson(places))
         style.getSourceAs<GeoJsonSource>(FOOD_SRC)?.setGeoJson(placesJson(foods))
         style.getSourceAs<GeoJsonSource>(SELECTED_SRC)?.setGeoJson(selectedJson(selected))
     }
 
-    LaunchedEffect(styleReady, start) {
+    LaunchedEffect(styleVersion, start) {
         val style = map?.style ?: return@LaunchedEffect
         val json = if (start == null) EMPTY_FC
         else featureCollection(listOf(pointFeature(start.lat, start.lon)))
@@ -334,7 +189,7 @@ fun MapPane(
     }
 
     // Маршрут, зупинки, повороти, користувач (оновлюється з кожним GPS-фіксом)
-    LaunchedEffect(styleReady, route, nav) {
+    LaunchedEffect(styleVersion, route, nav) {
         val style = map?.style ?: return@LaunchedEffect
         val (traveled, remaining) = routeSplit(route, nav)
         style.getSourceAs<GeoJsonSource>(TRAVELED_SRC)?.setGeoJson(lineJson(traveled))
@@ -345,13 +200,13 @@ fun MapPane(
     }
 
     // Камера: на місто, на весь маршрут, на вибране місце
-    LaunchedEffect(styleReady, city) {
+    LaunchedEffect(map, city) {
         val m = map ?: return@LaunchedEffect
         if (city != null) {
             m.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(city.lat, city.lon), 13.5))
         }
     }
-    LaunchedEffect(styleReady, route) {
+    LaunchedEffect(map, route) {
         val m = map ?: return@LaunchedEffect
         if (nav.active) return@LaunchedEffect
         val points = route?.geometry?.map { LatLng(it.lat, it.lon) }
@@ -360,7 +215,7 @@ fun MapPane(
             m.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 60))
         }
     }
-    LaunchedEffect(styleReady, selected) {
+    LaunchedEffect(map, selected) {
         val m = map ?: return@LaunchedEffect
         if (selected != null) {
             m.animateCamera(CameraUpdateFactory.newLatLng(LatLng(selected.lat, selected.lon)))
@@ -368,7 +223,7 @@ fun MapPane(
     }
 
     // Навігація: камера слідує за користувачем, повернута за напрямком руху
-    LaunchedEffect(styleReady, nav.user, nav.follow, nav.active) {
+    LaunchedEffect(map, nav.user, nav.follow, nav.active) {
         val m = map ?: return@LaunchedEffect
         val user = nav.user
         if (nav.active && nav.follow && user != null) {
@@ -391,6 +246,166 @@ fun MapPane(
     }
 
     AndroidView(factory = { mapView }, modifier = modifier)
+}
+
+/** Додає джерела й шари застосунку поверх щойно завантаженого стилю карти. */
+private fun installLayers(style: Style, dark: Boolean, startLabel: String) {
+    style.addSource(GeoJsonSource(TRAVELED_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(ROUTE_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(PLACES_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(FOOD_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(STOPS_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(MANEUVER_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(SELECTED_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(USER_SRC, EMPTY_FC))
+    style.addSource(GeoJsonSource(START_SRC, EMPTY_FC))
+
+    // Пройдений відрізок (сірий) під активним маршрутом
+    style.addLayer(
+        LineLayer("traveled-layer", TRAVELED_SRC).withProperties(
+            PropertyFactory.lineColor(Color.parseColor(GREY)),
+            PropertyFactory.lineWidth(5f),
+            PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+            PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+        )
+    )
+    style.addLayer(
+        LineLayer("route-layer", ROUTE_SRC).withProperties(
+            PropertyFactory.lineColor(Color.parseColor(if (dark) "#26C6B0" else TEAL)),
+            PropertyFactory.lineWidth(6f),
+            PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+            PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+        )
+    )
+    // Місця: колір залежить від категорії
+    style.addLayer(
+        CircleLayer("places-layer", PLACES_SRC).withProperties(
+            PropertyFactory.circleRadius(7f),
+            PropertyFactory.circleColor(Expression.get("color")),
+            PropertyFactory.circleStrokeColor(Color.WHITE),
+            PropertyFactory.circleStrokeWidth(2f)
+        )
+    )
+    // Заклади харчування: менші маркери
+    style.addLayer(
+        CircleLayer("food-layer", FOOD_SRC).withProperties(
+            PropertyFactory.circleRadius(5.5f),
+            PropertyFactory.circleColor(Expression.get("color")),
+            PropertyFactory.circleStrokeColor(Color.WHITE),
+            PropertyFactory.circleStrokeWidth(2f)
+        )
+    )
+    // Зупинки маршруту: колір залежить від стану (пройдена, наступна, попереду)
+    style.addLayer(
+        CircleLayer("stops-layer", STOPS_SRC).withProperties(
+            PropertyFactory.circleRadius(13f),
+            PropertyFactory.circleColor(Expression.get("c")),
+            PropertyFactory.circleStrokeColor(Color.WHITE),
+            PropertyFactory.circleStrokeWidth(2.5f)
+        )
+    )
+    style.addLayer(
+        SymbolLayer("numbers-layer", STOPS_SRC).withProperties(
+            PropertyFactory.textField(Expression.get("n")),
+            PropertyFactory.textSize(13f),
+            PropertyFactory.textColor(Color.WHITE),
+            PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+            PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        )
+    )
+    // Позначки поворотів
+    style.addLayer(
+        CircleLayer("maneuver-layer", MANEUVER_SRC).withProperties(
+            PropertyFactory.circleRadius(12f),
+            PropertyFactory.circleColor(Color.WHITE),
+            PropertyFactory.circleStrokeColor(Color.parseColor(TEAL)),
+            PropertyFactory.circleStrokeWidth(2.5f)
+        )
+    )
+    style.addLayer(
+        SymbolLayer("maneuver-arrows-layer", MANEUVER_SRC).withProperties(
+            PropertyFactory.textField(Expression.get("a")),
+            PropertyFactory.textSize(15f),
+            PropertyFactory.textColor(Color.parseColor(TEAL)),
+            PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+            PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        )
+    )
+    style.addLayer(
+        CircleLayer("selected-layer", SELECTED_SRC).withProperties(
+            PropertyFactory.circleRadius(17f),
+            PropertyFactory.circleColor(Color.TRANSPARENT),
+            PropertyFactory.circleStrokeColor(Color.parseColor(ORANGE)),
+            PropertyFactory.circleStrokeWidth(3.5f)
+        )
+    )
+    // Положення користувача: напівпрозорий ореол і крапка
+    style.addLayer(
+        CircleLayer("user-halo-layer", USER_SRC).withProperties(
+            PropertyFactory.circleRadius(20f),
+            PropertyFactory.circleColor(Color.parseColor(BLUE)),
+            PropertyFactory.circleOpacity(0.25f)
+        )
+    )
+    style.addLayer(
+        CircleLayer("user-dot-layer", USER_SRC).withProperties(
+            PropertyFactory.circleRadius(8f),
+            PropertyFactory.circleColor(Color.parseColor(BLUE)),
+            PropertyFactory.circleStrokeColor(Color.WHITE),
+            PropertyFactory.circleStrokeWidth(3f)
+        )
+    )
+    // Старт маршруту, заданий користувачем
+    style.addLayer(
+        CircleLayer("start-layer", START_SRC).withProperties(
+            PropertyFactory.circleRadius(10f),
+            PropertyFactory.circleColor(Color.parseColor(GREEN)),
+            PropertyFactory.circleStrokeColor(Color.WHITE),
+            PropertyFactory.circleStrokeWidth(3f)
+        )
+    )
+    style.addLayer(
+        SymbolLayer("start-label-layer", START_SRC).withProperties(
+            PropertyFactory.textField(startLabel),
+            PropertyFactory.textSize(12f),
+            PropertyFactory.textColor(Color.parseColor(if (dark) "#81C784" else GREEN)),
+            PropertyFactory.textHaloColor(Color.parseColor(if (dark) "#101414" else "#FFFFFF")),
+            PropertyFactory.textHaloWidth(1.6f),
+            PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+            PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+            PropertyFactory.textOffset(arrayOf(0f, 1.1f)),
+            PropertyFactory.textAllowOverlap(true)
+        )
+    )
+    // Підписи з'являються при наближенні
+    style.addLayer(
+        SymbolLayer("labels-layer", PLACES_SRC).withProperties(
+            PropertyFactory.textField(Expression.get("name")),
+            PropertyFactory.textSize(12f),
+            PropertyFactory.textColor(Color.parseColor(if (dark) "#E8EEEC" else "#1B1F1E")),
+            PropertyFactory.textHaloColor(Color.parseColor(if (dark) "#101414" else "#FFFFFF")),
+            PropertyFactory.textHaloWidth(1.6f),
+            PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+            PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
+            PropertyFactory.textOptional(true)
+        ).apply { setMinZoom(14f) }
+    )
+    style.addLayer(
+        SymbolLayer("food-labels-layer", FOOD_SRC).withProperties(
+            PropertyFactory.textField(Expression.get("name")),
+            PropertyFactory.textSize(11f),
+            PropertyFactory.textColor(Color.parseColor(if (dark) "#FFCC80" else "#5D4037")),
+            PropertyFactory.textHaloColor(Color.parseColor(if (dark) "#101414" else "#FFFFFF")),
+            PropertyFactory.textHaloWidth(1.6f),
+            PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+            PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+            PropertyFactory.textOffset(arrayOf(0f, 0.8f)),
+            PropertyFactory.textOptional(true)
+        ).apply { setMinZoom(15f) }
+    )
 }
 
 // --- GeoJSON ---

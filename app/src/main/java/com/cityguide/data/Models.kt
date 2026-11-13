@@ -1,19 +1,22 @@
 package com.cityguide.data
 
+import androidx.annotation.StringRes
+import com.cityguide.R
+
 data class LatLon(val lat: Double, val lon: Double)
 
 data class City(val name: String, val lat: Double, val lon: Double) {
     val pos: LatLon get() = LatLon(lat, lon)
 }
 
-enum class Category(val label: String, val color: String) {
-    HISTORY("Історія", "#8D6E63"),
-    MUSEUMS("Музеї", "#5E35B1"),
-    VIEWS("Краєвиди", "#039BE5"),
-    RELIGION("Храми", "#FB8C00"),
-    PARK("Парки", "#2E7D32"),
-    OTHER("Інше", "#E53935"),
-    FOOD("Заклади", "#F9A825");
+enum class Category(@StringRes val labelRes: Int, val color: String) {
+    HISTORY(R.string.cat_history, "#8D6E63"),
+    MUSEUMS(R.string.cat_museums, "#5E35B1"),
+    VIEWS(R.string.cat_views, "#039BE5"),
+    RELIGION(R.string.cat_religion, "#FB8C00"),
+    PARK(R.string.cat_park, "#2E7D32"),
+    OTHER(R.string.cat_other, "#E53935"),
+    FOOD(R.string.cat_food, "#F9A825");
 
     companion object {
         /** Категорії визначних місць (без закладів харчування). */

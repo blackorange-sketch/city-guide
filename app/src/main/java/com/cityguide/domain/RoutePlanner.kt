@@ -1,5 +1,7 @@
 package com.cityguide.domain
 
+import android.content.Context
+import com.cityguide.R
 import com.cityguide.data.Category
 import com.cityguide.data.LatLon
 import com.cityguide.data.Place
@@ -38,12 +40,12 @@ object RoutePlanner {
     // --- заклади харчування ---
 
     private val FOOD_TYPES = mapOf(
-        "cafe" to "Кафе",
-        "restaurant" to "Ресторан",
-        "fast_food" to "Фастфуд",
-        "pub" to "Паб",
-        "bar" to "Бар",
-        "ice_cream" to "Морозиво"
+        "cafe" to R.string.food_cafe,
+        "restaurant" to R.string.food_restaurant,
+        "fast_food" to R.string.food_fast_food,
+        "pub" to R.string.food_pub,
+        "bar" to R.string.food_bar,
+        "ice_cream" to R.string.food_ice_cream
     )
 
     private val USEFUL_FOOD_TAGS = listOf(
@@ -54,8 +56,8 @@ object RoutePlanner {
     /** Рейтингів у OSM немає, тож "якість" заклади оцінюємо за повнотою даних про них. */
     fun foodScore(tags: Map<String, String>): Int = USEFUL_FOOD_TAGS.count { tags.containsKey(it) }
 
-    fun foodDescription(tags: Map<String, String>): String {
-        val type = FOOD_TYPES[tags["amenity"]] ?: "Заклад"
+    fun foodDescription(context: Context, tags: Map<String, String>): String {
+        val type = context.getString(FOOD_TYPES[tags["amenity"]] ?: R.string.food_generic)
         val cuisine = tags["cuisine"]?.split(';')?.firstOrNull()?.replace('_', ' ')?.trim()
         return if (cuisine.isNullOrEmpty()) type else "$type · $cuisine"
     }

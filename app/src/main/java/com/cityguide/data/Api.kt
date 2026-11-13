@@ -41,6 +41,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.min
 
+/** Відповідь сервера з кодом помилки (текст для користувача формує ViewModel). */
+class HttpException(val code: Int, val host: String) : IOException("HTTP $code from $host")
+
 /** Місце з OpenStreetMap до збагачення даними Wikidata. */
 data class RawPlace(
     val id: String,
@@ -126,8 +129,8 @@ object Api {
             override fun onResponse(call: Call, response: Response) {
                 response.use { resp ->
                     try {
-                        if (!resp.isSuccessful) error("Помилка ${resp.code} від ${request.url.host}")
-                        val text = resp.body?.string() ?: error("Порожня відповідь від ${request.url.host}")
+                        if (!resp.isSuccessful) throw HttpException(resp.code, request.url.host)
+                        val text = resp.body?.string() ?: throw IOException("Empty response from ${request.url.host}")
                         if (cont.isActive) cont.resume(text)
                     } catch (e: Exception) {
                         if (cont.isActive) cont.resumeWithException(e)
@@ -172,7 +175,7 @@ object Api {
                 }
                 last = result.exceptionOrNull()
             }
-            throw last ?: IllegalStateException("Немає відповіді")
+            throw last ?: IOException("No response")
         }
 
     private fun overpassCacheFile(key: String): File? =

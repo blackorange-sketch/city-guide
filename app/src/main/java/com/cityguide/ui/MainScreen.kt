@@ -1,15 +1,27 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.cityguide.ui
 
 import android.Manifest
-import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,23 +37,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -54,9 +60,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -64,28 +69,23 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.ImageLoader
-import coil.compose.AsyncImage
 import com.cityguide.MainViewModel
-import com.cityguide.NavState
+import com.cityguide.R
 import com.cityguide.Tts
 import com.cityguide.UiState
 import com.cityguide.currentLocation
-import com.cityguide.locationUpdates
-import com.cityguide.data.Api
-import com.cityguide.data.Category
-import com.cityguide.data.LatLon
 import com.cityguide.data.Place
-import com.cityguide.data.PlaceDetail
 import com.cityguide.data.Route
+import com.cityguide.locationUpdates
 import kotlin.math.roundToInt
 
 private val LOCATION_PERMISSIONS = arrayOf(
@@ -93,16 +93,22 @@ private val LOCATION_PERMISSIONS = arrayOf(
     Manifest.permission.ACCESS_COARSE_LOCATION
 )
 
-private val RADIUS_OPTIONS_KM = listOf(1.0, 2.5, 5.0, 10.0)
-private val FOOD_DISTANCE_OPTIONS_M = listOf(300, 600, 1000, 1500)
+/** Який вміст показує нижня панель (разом з id місця, щоб перехід між місцями теж анімувався). */
+private enum class PanelKind { NAV, PICK, PLACE, ROUTE, PLAN, HINT }
+
+private data class PanelKey(val kind: PanelKind, val id: String? = null)
 
 @Composable
-fun MainScreen(vm: MainViewModel = viewModel()) {
+fun MainScreen(
+    themeMode: ThemeMode,
+    onCycleTheme: () -> Unit,
+    vm: MainViewModel = viewModel()
+) {
     val s by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     val density = context.resources.displayMetrics.density
-    val maxPanel = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
+    val maxPanel = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
 
     var rootHeight by remember { mutableIntStateOf(0) }
     var searchBottom by remember { mutableIntStateOf(0) }
@@ -128,7 +134,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             !result.values.any { it } -> {
                 wantNav = false
                 wantStart = false
-                vm.showError("Немає дозволу на геолокацію")
+                vm.showError(context.getString(R.string.err_no_permission))
             }
             wantNav -> {
                 wantNav = false
@@ -187,12 +193,12 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 }
             } catch (e: SecurityException) {
                 vm.stopNavigation()
-                vm.showError("Немає дозволу на геолокацію")
+                vm.showError(context.getString(R.string.err_no_permission))
             }
         }
     }
 
-    // Голосові підказки
+    // Голосові підказки мовою інтерфейсу
     val tts = remember { Tts(context) }
     DisposableEffect(Unit) { onDispose { tts.shutdown() } }
     LaunchedEffect(nav.announcement?.id) {
@@ -203,6 +209,21 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
     val bottomPad = if (panelTop > 0) (rootHeight - panelTop).coerceAtLeast(0) else 0
     val selected = s.selected
     val route = s.route
+
+    // Остання відома картка й маршрут: потрібні, щоб панель плавно зникала, коли стан уже очищено
+    val placeKeep = remember { arrayOfNulls<Place>(1) }
+    selected?.let { placeKeep[0] = it }
+    val routeKeep = remember { arrayOfNulls<Route>(1) }
+    route?.let { routeKeep[0] = it }
+
+    val panelKey = when {
+        nav.active && route != null -> PanelKey(PanelKind.NAV)
+        s.pickingStart -> PanelKey(PanelKind.PICK)
+        selected != null -> PanelKey(PanelKind.PLACE, selected.id)
+        route != null -> PanelKey(PanelKind.ROUTE)
+        s.places.isNotEmpty() -> PanelKey(PanelKind.PLAN)
+        else -> PanelKey(PanelKind.HINT)
+    }
 
     Box(
         Modifier
@@ -219,6 +240,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             nav = nav,
             start = s.start,
             pickingStart = s.pickingStart && !nav.active,
+            startLabel = stringResource(R.string.start_marker),
             topPaddingPx = searchBottom + (8 * density).toInt(),
             bottomPaddingPx = bottomPad + (8 * density).toInt(),
             onPlaceClick = { id -> if (!nav.active) vm.selectPlace(id) },
@@ -227,7 +249,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             modifier = Modifier.fillMaxSize()
         )
 
-        // --- верх: пошук і підказки ---
+        // --- верх: пошук або банер навігації, підказки міст ---
         Column(
             Modifier
                 .align(Alignment.TopCenter)
@@ -235,102 +257,70 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 .statusBarsPadding()
                 .padding(12.dp)
         ) {
-            if (nav.active) {
-                NavBanner(
-                    nav = nav,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onGloballyPositioned { searchBottom = it.boundsInRoot().bottom.roundToInt() }
-                )
-            } else {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onGloballyPositioned { searchBottom = it.boundsInRoot().bottom.roundToInt() },
-                    shape = RoundedCornerShape(28.dp),
-                    shadowElevation = 8.dp,
-                    tonalElevation = 2.dp
-                ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextField(
-                                value = s.query,
-                                onValueChange = vm::onQuery,
-                                modifier = Modifier.weight(1f),
-                                singleLine = true,
-                                placeholder = { Text("Місто або село") },
-                                leadingIcon = { Text("🔍", fontSize = 18.sp) },
-                                trailingIcon = {
-                                    if (s.query.isNotEmpty()) {
-                                        Text(
-                                            "✕",
-                                            modifier = Modifier
-                                                .clickable { vm.onQuery("") }
-                                                .padding(12.dp),
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                        )
-                                    }
-                                },
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(onSearch = {
-                                    focus.clearFocus()
-                                    vm.search()
-                                }),
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    disabledContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    disabledIndicatorColor = Color.Transparent
-                                )
-                            )
-                            Text(
-                                "📍",
-                                fontSize = 22.sp,
-                                modifier = Modifier
-                                    .clickable(enabled = !s.loading, onClick = onLocateClick)
-                                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                            )
-                        }
-                        if (s.loading) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
-                        }
+            Box(Modifier.onGloballyPositioned { searchBottom = it.boundsInRoot().bottom.roundToInt() }) {
+                AnimatedContent(
+                    targetState = nav.active,
+                    transitionSpec = {
+                        (fadeIn(tween(250)) + slideInVertically(tween(300)) { -it / 2 }) togetherWith
+                            (fadeOut(tween(150)) + slideOutVertically(tween(250)) { -it / 2 }) using
+                            SizeTransform(clip = false) { _, _ ->
+                                spring<IntSize>(stiffness = Spring.StiffnessMediumLow)
+                            }
+                    },
+                    label = "top-bar"
+                ) { navActive ->
+                    if (navActive) {
+                        NavBanner(nav, Modifier.fillMaxWidth())
+                    } else {
+                        SearchPill(
+                            s = s,
+                            vm = vm,
+                            focus = focus,
+                            themeMode = themeMode,
+                            onLocate = onLocateClick,
+                            onCycleTheme = onCycleTheme
+                        )
                     }
                 }
             }
 
-            if (!nav.active && s.suggestions.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    shadowElevation = 8.dp,
-                    tonalElevation = 2.dp
-                ) {
-                    Column {
-                        s.suggestions.forEachIndexed { index, suggestion ->
-                            if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        focus.clearFocus()
-                                        vm.selectSuggestion(suggestion)
-                                    }
-                                    .padding(horizontal = 16.dp, vertical = 10.dp)
-                            ) {
-                                Text(
-                                    suggestion.name,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                if (suggestion.subtitle.isNotEmpty()) {
+            AnimatedVisibility(
+                visible = !nav.active && s.suggestions.isNotEmpty(),
+                enter = fadeIn(tween(200)) + expandVertically(tween(250)),
+                exit = fadeOut(tween(150)) + shrinkVertically(tween(200))
+            ) {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        shadowElevation = 12.dp
+                    ) {
+                        Column {
+                            s.suggestions.forEachIndexed { index, suggestion ->
+                                if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                                Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            focus.clearFocus()
+                                            vm.selectSuggestion(suggestion)
+                                        }
+                                        .padding(horizontal = 18.dp, vertical = 11.dp)
+                                ) {
                                     Text(
-                                        suggestion.subtitle,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        suggestion.name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Medium
                                     )
+                                    if (suggestion.subtitle.isNotEmpty()) {
+                                        Text(
+                                            suggestion.subtitle,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -345,16 +335,15 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .onGloballyPositioned { panelTop = it.boundsInRoot().top.roundToInt() },
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            shadowElevation = 16.dp,
-            tonalElevation = 2.dp
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shadowElevation = 24.dp
         ) {
             Column(
                 Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 16.dp)
             ) {
                 Box(
                     Modifier
@@ -362,491 +351,103 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                         .width(40.dp)
                         .height(4.dp)
                         .background(
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f),
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
                             RoundedCornerShape(2.dp)
                         )
                 )
-                Column(
-                    Modifier
-                        .heightIn(max = maxPanel)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                Spacer(Modifier.height(12.dp))
+
+                // Помилка з'являється над вмістом і закривається крапкою
+                AnimatedVisibility(
+                    visible = s.error != null,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
                 ) {
-                    s.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    when {
-                        nav.active && route != null -> NavContent(nav, route, vm)
-                        s.pickingStart -> {
-                            Text(
-                                "Торкніться карти, щоб обрати стартову точку",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            OutlinedButton(
-                                onClick = { vm.pickStartOnMap(false) },
-                                modifier = Modifier.fillMaxWidth().height(48.dp),
-                                shape = RoundedCornerShape(14.dp)
-                            ) { Text("Скасувати") }
+                    Column {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { vm.dismissError() }
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    s.error.orEmpty(),
+                                    Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text("✕", color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
                         }
-                        selected != null -> PlaceContent(
-                            place = selected,
-                            detail = s.detail,
-                            hasRoute = route != null,
-                            inRoute = route?.stops?.any { it.id == selected.id } == true,
-                            loading = s.loading,
-                            onAdd = { vm.addToRoute(selected) },
-                            onClose = vm::clearSelection
-                        )
-                        route != null -> RouteContent(route, s.start, s.foodMaxM, s.loading, vm, onStartNav)
-                        s.places.isNotEmpty() -> PlanContent(s, vm, onStartHere)
-                        s.error == null -> Text(
-                            s.status ?: "Введіть місто або натисніть 📍, щоб знайти цікаві місця поруч",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        Spacer(Modifier.height(12.dp))
                     }
                 }
-            }
-        }
-    }
-}
 
-@Composable
-private fun rememberImageLoader(): ImageLoader {
-    val context = LocalContext.current
-    // Wikimedia вимагає осмислений User-Agent, тож беремо спільний клієнт
-    return remember { ImageLoader.Builder(context).okHttpClient { Api.client }.build() }
-}
-
-private fun openUrl(context: Context, url: String) {
-    val full = if (url.startsWith("http")) url else "https://$url"
-    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(full))) }
-}
-
-@Composable
-private fun PlaceContent(
-    place: Place,
-    detail: PlaceDetail?,
-    hasRoute: Boolean,
-    inRoute: Boolean,
-    loading: Boolean,
-    onAdd: () -> Unit,
-    onClose: () -> Unit
-) {
-    val context = LocalContext.current
-    val imageLoader = rememberImageLoader()
-
-    Row(verticalAlignment = Alignment.Top) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                place.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            val subtitle = if (place.category == Category.FOOD) {
-                place.category.label
-            } else {
-                "${place.category.label} · статей у Вікіпедії: ${place.score}"
-            }
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-        Text(
-            "✕",
-            modifier = Modifier
-                .clickable(onClick = onClose)
-                .padding(start = 16.dp, top = 2.dp, bottom = 8.dp),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-        )
-    }
-
-    detail?.imageUrl?.let { url ->
-        AsyncImage(
-            model = url,
-            imageLoader = imageLoader,
-            contentDescription = place.name,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(160.dp)
-                .clip(RoundedCornerShape(16.dp))
-        )
-    }
-
-    val text = detail?.extract ?: place.description
-    if (!text.isNullOrBlank()) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 7,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-    place.hours?.let { Text("🕒 $it", style = MaterialTheme.typography.bodySmall) }
-
-    val link = detail?.pageUrl ?: place.website
-    val canAdd = hasRoute && !inRoute
-    if (canAdd || link != null) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (canAdd) {
-                Button(
-                    onClick = onAdd,
-                    enabled = !loading,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(14.dp)
-                ) { Text("Додати в маршрут") }
-            }
-            if (link != null) {
-                OutlinedButton(
-                    onClick = { openUrl(context, link) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(14.dp)
-                ) { Text(if (place.category == Category.FOOD) "Сайт" else "Вікіпедія") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
-    }
-}
-
-@Composable
-private fun PlanContent(s: UiState, vm: MainViewModel, onStartHere: () -> Unit) {
-    Text(
-        "${s.city?.name.orEmpty()}: знайдено місць ${s.places.size}",
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold
-    )
-    Text("Категорії (порожньо = усі)", style = MaterialTheme.typography.labelMedium)
-    Row(
-        Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Category.sights.forEach { category ->
-            FilterChip(
-                selected = category in s.categories,
-                onClick = { vm.toggleCategory(category) },
-                label = { Text(category.label) }
-            )
-        }
-    }
-    Text("Радіус пошуку", style = MaterialTheme.typography.labelMedium)
-    Row(
-        Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        RADIUS_OPTIONS_KM.forEach { km ->
-            FilterChip(
-                selected = s.radiusKm == km,
-                enabled = !s.loading,
-                onClick = { vm.setRadius(km) },
-                label = { Text("${if (km % 1.0 == 0.0) km.toInt().toString() else km.toString()} км") }
-            )
-        }
-    }
-    SwitchRow(
-        "Розширений пошук (і місця без статті у Вікіпедії)",
-        s.extended, !s.loading
-    ) { vm.setExtended(it) }
-    SwitchRow(
-        "Показати заклади харчування на карті",
-        s.showFood, !s.loading
-    ) { vm.toggleFood() }
-    Text("Старт маршруту", style = MaterialTheme.typography.labelMedium)
-    Row(
-        Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        FilterChip(
-            selected = s.start == null,
-            enabled = !s.loading,
-            onClick = vm::setStartAuto,
-            label = { Text("Авто") }
-        )
-        FilterChip(
-            selected = false,
-            enabled = !s.loading,
-            onClick = onStartHere,
-            label = { Text("📍 Моє місце") }
-        )
-        FilterChip(
-            selected = false,
-            enabled = !s.loading,
-            onClick = { vm.pickStartOnMap(true) },
-            label = { Text("🗺 На карті") }
-        )
-    }
-    if (s.start != null) {
-        Text(
-            "Старт задано (зелена мітка на карті)",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-        )
-    }
-    FoodDistanceChips(s.foodMaxM, !s.loading, vm::setFoodMax)
-    Text(
-        "Тривалість прогулянки: ${formatMinutes(s.durationMin)}",
-        style = MaterialTheme.typography.bodyMedium
-    )
-    Slider(
-        value = s.durationMin.toFloat(),
-        onValueChange = { vm.setDuration(it.roundToInt()) },
-        valueRange = 60f..300f,
-        steps = 7
-    )
-    Button(
-        onClick = vm::buildRoute,
-        enabled = !s.loading,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp),
-        shape = RoundedCornerShape(16.dp)
-    ) { Text("Побудувати маршрут", fontSize = 16.sp) }
-}
-
-@Composable
-private fun FoodDistanceChips(value: Int, enabled: Boolean, onSelect: (Int) -> Unit) {
-    Text("Заклад поруч: не далі від маршруту", style = MaterialTheme.typography.labelMedium)
-    Row(
-        Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        FOOD_DISTANCE_OPTIONS_M.forEach { m ->
-            FilterChip(
-                selected = value == m,
-                enabled = enabled,
-                onClick = { onSelect(m) },
-                label = { Text(if (m >= 1000) "${m / 1000.0} км".replace(".0", "") else "$m м") }
-            )
-        }
-    }
-}
-
-@Composable
-private fun RouteContent(
-    route: Route,
-    start: LatLon?,
-    foodMaxM: Int,
-    loading: Boolean,
-    vm: MainViewModel,
-    onStartNav: () -> Unit
-) {
-    val context = LocalContext.current
-    val km = route.distanceMeters / 1000.0
-    val walkMin = (route.durationSeconds / 60).roundToInt()
-    Text(
-        "Маршрут: ${"%.1f".format(km)} км · ~${formatMinutes(walkMin)} пішки · зупинок: ${route.stops.size}",
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold
-    )
-
-    route.stops.forEachIndexed { index, place ->
-        val isFood = place.category == Category.FOOD
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable { vm.selectPlace(place.id) },
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                Modifier
-                    .size(26.dp)
-                    .background(
-                        if (isFood) MaterialTheme.colorScheme.secondary
-                        else MaterialTheme.colorScheme.primary,
-                        CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "${index + 1}",
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    (if (isFood) "🍴 " else "") + place.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                place.description?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            val arrowColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (loading) 0.3f else 0.8f)
-            Text(
-                "↑",
-                color = arrowColor,
-                fontSize = 18.sp,
-                modifier = Modifier
-                    .clickable(enabled = !loading && index > 0) { vm.moveStop(index, -1) }
-                    .padding(horizontal = 10.dp, vertical = 10.dp)
-            )
-            Text(
-                "↓",
-                color = arrowColor,
-                fontSize = 18.sp,
-                modifier = Modifier
-                    .clickable(enabled = !loading && index < route.stops.lastIndex) {
-                        vm.moveStop(index, 1)
-                    }
-                    .padding(horizontal = 10.dp, vertical = 10.dp)
-            )
-            Text(
-                "✕",
-                color = MaterialTheme.colorScheme.error,
-                fontSize = 16.sp,
-                modifier = Modifier
-                    .clickable(enabled = !loading) { vm.removeStop(place.id) }
-                    .padding(horizontal = 10.dp, vertical = 10.dp)
-            )
-        }
-    }
-
-    FoodDistanceChips(foodMaxM, !loading, vm::setFoodMax)
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedButton(
-            onClick = vm::optimizeOrder,
-            enabled = !loading,
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text("Авто-порядок") }
-        OutlinedButton(
-            onClick = vm::addLunch,
-            enabled = !loading,
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text("🍴 Обід поруч") }
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedButton(
-            onClick = vm::clearRoute,
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text("Змінити параметри") }
-        Button(
-            onClick = onStartNav,
-            enabled = !loading,
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text("▶ Навігація") }
-    }
-    TextButton(
-        onClick = { openUrl(context, googleMapsUrl(route, start)) },
-        modifier = Modifier.fillMaxWidth()
-    ) { Text("Відкрити в Google Maps") }
-}
-
-private fun googleMapsUrl(route: Route, start: LatLon?): String {
-    val first = route.stops.first()
-    val last = route.stops.last()
-    val origin = if (start != null) "${start.lat},${start.lon}" else "${first.lat},${first.lon}"
-    val middle = if (start != null) route.stops.dropLast(1) else route.stops.drop(1).dropLast(1)
-    val waypoints = middle.joinToString("|") { "${it.lat},${it.lon}" }
-    return Uri.Builder()
-        .scheme("https")
-        .authority("www.google.com")
-        .appendPath("maps")
-        .appendPath("dir")
-        .appendPath("")
-        .appendQueryParameter("api", "1")
-        .appendQueryParameter("origin", origin)
-        .appendQueryParameter("destination", "${last.lat},${last.lon}")
-        .apply { if (waypoints.isNotEmpty()) appendQueryParameter("waypoints", waypoints) }
-        .appendQueryParameter("travelmode", "walking")
-        .build()
-        .toString()
-}
-
-private fun formatMinutes(minutes: Int): String {
-    val h = minutes / 60
-    val m = minutes % 60
-    return when {
-        h == 0 -> "$m хв"
-        m == 0 -> "$h год"
-        else -> "$h год $m хв"
-    }
-}
-
-@Composable
-private fun NavBanner(nav: NavState, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.primary,
-        shadowElevation = 8.dp
-    ) {
-        Row(
-            Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val icon = when {
-                nav.finished -> "🎉"
-                nav.user == null -> "📡"
-                else -> nav.arrow
-            }
-            Text(icon, fontSize = 40.sp, color = MaterialTheme.colorScheme.onPrimary)
-            Spacer(Modifier.width(16.dp))
-            Column {
-                when {
-                    nav.finished -> Text(
-                        "Маршрут завершено",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    nav.user == null -> Column {
+                // Індикатор довгого завантаження, коли місця вже є (оновлення радіуса тощо)
+                AnimatedVisibility(
+                    visible = s.loading && s.status != null && s.places.isNotEmpty(),
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Row(
+                        Modifier.padding(bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
                         Text(
-                            "Очікую сигнал GPS…",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Text(
-                            "Вийдіть на відкрите місце й перевірте, чи увімкнена геолокація",
+                            s.status.orEmpty(),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    else -> {
-                        Text(
-                            formatDistance(nav.distToManeuver),
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Text(
-                            nav.instruction,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
+                }
+
+                AnimatedContent(
+                    targetState = panelKey,
+                    transitionSpec = {
+                        (fadeIn(tween(240, delayMillis = 70)) +
+                            slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it / 10 }) togetherWith
+                            fadeOut(tween(120)) using
+                            SizeTransform(clip = false) { _, _ ->
+                                spring<IntSize>(stiffness = Spring.StiffnessMediumLow)
+                            }
+                    },
+                    label = "panel"
+                ) { key ->
+                    Column(
+                        Modifier
+                            .heightIn(max = maxPanel)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        when (key.kind) {
+                            PanelKind.NAV -> (route ?: routeKeep[0])?.let { NavContent(nav, it, vm) }
+                            PanelKind.PICK -> PickStartContent { vm.pickStartOnMap(false) }
+                            PanelKind.PLACE -> (selected ?: placeKeep[0])?.let { place ->
+                                val current = route ?: routeKeep[0]
+                                PlaceContent(
+                                    place = place,
+                                    detail = s.detail,
+                                    hasRoute = route != null,
+                                    inRoute = current?.stops?.any { it.id == place.id } == true,
+                                    loading = s.loading,
+                                    onAdd = { vm.addToRoute(place) },
+                                    onClose = vm::clearSelection
+                                )
+                            }
+                            PanelKind.ROUTE -> (route ?: routeKeep[0])?.let {
+                                RouteContent(it, s.start, s.foodMaxM, s.loading, vm, onStartNav)
+                            }
+                            PanelKind.PLAN -> PlanContent(s, vm, onStartHere)
+                            PanelKind.HINT -> HintContent(s.status)
+                        }
                     }
                 }
             }
@@ -854,76 +455,88 @@ private fun NavBanner(nav: NavState, modifier: Modifier = Modifier) {
     }
 }
 
+/** Плаваюча пошукова капсула: поле, геолокація, перемикач теми, індикатор завантаження. */
 @Composable
-private fun NavContent(nav: NavState, route: Route, vm: MainViewModel) {
-    if (nav.finished) {
-        Text(
-            "Ви пройшли весь маршрут. Дякуємо за прогулянку!",
-            style = MaterialTheme.typography.titleMedium
-        )
-        Button(
-            onClick = vm::stopNavigation,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text("Закрити") }
-        return
-    }
-
-    val stop = route.stops.getOrNull(nav.nextStopIndex)
-    if (stop != null) {
-        Text(
-            "Далі: ${nav.nextStopIndex + 1}. ${stop.name}",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        if (nav.user != null) {
-            Text(
-                "До зупинки: ${formatDistance(nav.distToNextStop)} · лишилось всього " +
-                    "${formatDistance(nav.remainingM)} (~${formatMinutes((nav.remainingSec / 60).roundToInt())})",
-                style = MaterialTheme.typography.bodyMedium
-            )
+private fun SearchPill(
+    s: UiState,
+    vm: MainViewModel,
+    focus: FocusManager,
+    themeMode: ThemeMode,
+    onLocate: () -> Unit,
+    onCycleTheme: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(30.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 14.dp
+    ) {
+        Column {
+            Row(
+                Modifier.padding(end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextField(
+                    value = s.query,
+                    onValueChange = vm::onQuery,
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    placeholder = { Text(stringResource(R.string.search_placeholder)) },
+                    leadingIcon = { Text("🔍", fontSize = 18.sp) },
+                    trailingIcon = {
+                        AnimatedVisibility(
+                            visible = s.query.isNotEmpty(),
+                            enter = fadeIn(tween(150)),
+                            exit = fadeOut(tween(150))
+                        ) {
+                            Text(
+                                "✕",
+                                modifier = Modifier
+                                    .clickable { vm.onQuery("") }
+                                    .padding(12.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = {
+                        focus.clearFocus()
+                        vm.search()
+                    }),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent
+                    )
+                )
+                IconCircle(
+                    description = stringResource(R.string.my_location_name),
+                    onClick = onLocate,
+                    enabled = !s.loading
+                ) { Text("📍", fontSize = 18.sp) }
+                Spacer(Modifier.width(6.dp))
+                IconCircle(
+                    description = stringResource(
+                        when (themeMode) {
+                            ThemeMode.SYSTEM -> R.string.theme_system
+                            ThemeMode.LIGHT -> R.string.theme_light
+                            ThemeMode.DARK -> R.string.theme_dark
+                        }
+                    ),
+                    onClick = onCycleTheme,
+                    container = MaterialTheme.colorScheme.surfaceContainerHigh
+                ) { ThemeIcon(themeMode) }
+            }
+            AnimatedVisibility(
+                visible = s.loading,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
         }
     }
-    if (nav.rerouting || nav.offRoute) {
-        Text(
-            "Ви відхилились від маршруту, перераховую шлях…",
-            color = MaterialTheme.colorScheme.error,
-            style = MaterialTheme.typography.bodyMedium
-        )
-    }
-    SwitchRow("Голосові підказки", nav.voice, true) { vm.setVoice(it) }
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedButton(
-            onClick = vm::skipStop,
-            modifier = Modifier
-                .weight(1f)
-                .height(48.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) { Text("Пропустити зупинку") }
-        if (!nav.follow) {
-            Button(
-                onClick = { vm.setFollow(true) },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                shape = RoundedCornerShape(14.dp)
-            ) { Text("Центрувати") }
-        }
-    }
-    Button(
-        onClick = vm::stopNavigation,
-        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        shape = RoundedCornerShape(14.dp)
-    ) { Text("Завершити навігацію") }
 }
-
-private fun formatDistance(meters: Double): String =
-    if (meters < 1000) "${((meters / 10).roundToInt() * 10).coerceAtLeast(0)} м"
-    else "${"%.1f".format(meters / 1000.0)} км"
