@@ -5,11 +5,15 @@ import androidx.lifecycle.viewModelScope
 import com.cityguide.data.Api
 import com.cityguide.data.Category
 import com.cityguide.data.City
+import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.PlaceDetail
 import com.cityguide.data.Route
 import com.cityguide.data.Suggestion
+import com.cityguide.domain.Geo
+import com.cityguide.domain.Instructions
 import com.cityguide.domain.RoutePlanner
+import com.cityguide.domain.RouteTracker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,6 +23,35 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlin.math.max
+import kotlin.math.roundToInt
+
+data class Announcement(val id: Int, val text: String)
+
+/** Стан навігації всередині застосунку. */
+data class NavState(
+    val active: Boolean = false,
+    val finished: Boolean = false,
+    val user: LatLon? = null,
+    val bearing: Float = 0f,
+    /** Положення користувача, прив'язане до лінії маршруту, і номер сегмента. */
+    val snapped: LatLon? = null,
+    val snapSegment: Int = 0,
+    val offRoute: Boolean = false,
+    val rerouting: Boolean = false,
+    val nextStopIndex: Int = 0,
+    /** Індекс наступного маневру в route.steps (steps.size, якщо поворотів більше немає). */
+    val nextStepIndex: Int = 0,
+    val distToNextStop: Double = 0.0,
+    val arrow: String = "↑",
+    val instruction: String = "",
+    val distToManeuver: Double = 0.0,
+    val remainingM: Double = 0.0,
+    val remainingSec: Double = 0.0,
+    val follow: Boolean = true,
+    val voice: Boolean = true,
+    val announcement: Announcement? = null
+)
 
 data class UiState(
     val query: String = "",
@@ -36,7 +69,8 @@ data class UiState(
     val durationMin: Int = 120,
     val route: Route? = null,
     val selected: Place? = null,
-    val detail: PlaceDetail? = null
+    val detail: PlaceDetail? = null,
+    val nav: NavState = NavState()
 )
 
 class MainViewModel : ViewModel() {
@@ -231,8 +265,178 @@ class MainViewModel : ViewModel() {
 
     private suspend fun recompute(stops: List<Place>) {
         val result = Api.route(stops.map { it.pos }) ?: error("Не вдалося побудувати маршрут")
-        val route = Route(stops, result.geometry, result.distance, result.duration)
+        val route = Route(stops, result.geometry, result.distance, result.duration, result.steps)
         _state.update { it.copy(route = route, selected = null, detail = null, status = null) }
+    }
+
+    // --- навігація ---
+
+    private var tracker: RouteTracker? = null
+    private var lastAnnouncedStep = -1
+    private var lastAnnouncedStop = -1
+    private var offRouteCount = 0
+    private var lastRerouteAt = 0L
+    private var announceCounter = 0
+
+    private fun announcement(text: String) = Announcement(++announceCounter, text)
+
+    fun startNavigation() {
+        val route = _state.value.route ?: return
+        if (route.geometry.size < 2) {
+            showError("Маршрут занадто короткий для навігації")
+            return
+        }
+        tracker = RouteTracker(route.geometry, route.steps, route.stops.map { it.pos }, 0)
+        lastAnnouncedStep = -1
+        lastAnnouncedStop = -1
+        offRouteCount = 0
+        lastRerouteAt = 0L
+        _state.update {
+            it.copy(
+                selected = null, detail = null, error = null,
+                nav = NavState(
+                    active = true,
+                    voice = it.nav.voice,
+                    announcement = announcement("Навігацію розпочато")
+                )
+            )
+        }
+    }
+
+    fun stopNavigation() {
+        tracker = null
+        _state.update { it.copy(nav = NavState(voice = it.nav.voice)) }
+    }
+
+    fun setVoice(value: Boolean) = _state.update { it.copy(nav = it.nav.copy(voice = value)) }
+
+    fun setFollow(value: Boolean) = _state.update { it.copy(nav = it.nav.copy(follow = value)) }
+
+    fun skipStop() {
+        val s = _state.value
+        val route = s.route ?: return
+        val next = s.nav.nextStopIndex + 1
+        _state.update { it.copy(nav = it.nav.copy(nextStopIndex = next, finished = next >= route.stops.size)) }
+    }
+
+    /** Нове положення з GPS: прогрес уздовж маршруту, підказки, прибуття, відхилення від маршруту. */
+    fun onLocation(lat: Double, lon: Double, bearing: Float?) {
+        val s = _state.value
+        val nav = s.nav
+        val route = s.route ?: return
+        val tr = tracker ?: return
+        if (!nav.active || nav.finished) return
+
+        val user = LatLon(lat, lon)
+        val snap = tr.snap(user, nav.snapSegment)
+        val along = snap.along
+        var announce: Announcement? = null
+
+        // Прибуття на зупинку
+        var nextStop = nav.nextStopIndex
+        var finished = false
+        val target = route.stops.getOrNull(nextStop)
+        if (target != null && Geo.distance(user, target.pos) < ARRIVE_RADIUS_M) {
+            announce = announcement("Ви прибули: ${target.name}")
+            nextStop++
+            if (nextStop >= route.stops.size) {
+                finished = true
+                announce = announcement("Маршрут завершено. Ви прибули: ${target.name}")
+            }
+        }
+
+        val nextTarget = route.stops.getOrNull(nextStop)
+        val distToStop = if (nextTarget != null) max(0.0, tr.alongToStop(nextStop) - along) else 0.0
+
+        // Наступний маневр
+        val stepIdx = tr.nextStepIndex(along)
+        var arrow = "↑"
+        var instruction = ""
+        var distManeuver = distToStop
+        if (stepIdx != null) {
+            val step = tr.steps[stepIdx]
+            arrow = Instructions.arrow(step)
+            instruction = Instructions.text(step)
+            distManeuver = max(0.0, tr.stepAlong[stepIdx] - along)
+            if (announce == null && distManeuver <= ANNOUNCE_DISTANCE_M && lastAnnouncedStep != stepIdx) {
+                lastAnnouncedStep = stepIdx
+                val meters = (distManeuver / 10).roundToInt() * 10
+                val text = instruction.replaceFirstChar { it.lowercase() }
+                announce = announcement(if (meters >= 20) "Через $meters метрів $text" else text)
+            }
+        } else if (nextTarget != null) {
+            instruction = "Прямуйте до: ${nextTarget.name}"
+        }
+        if (announce == null && nextTarget != null && distToStop <= 60.0 && lastAnnouncedStop != nextStop) {
+            lastAnnouncedStop = nextStop
+            announce = announcement("Попереду: ${nextTarget.name}")
+        }
+
+        val remaining = max(0.0, tr.length - along)
+        val offRoute = snap.offRoute > OFF_ROUTE_M
+        _state.update { cur ->
+            cur.copy(
+                nav = cur.nav.copy(
+                    user = user,
+                    bearing = bearing ?: cur.nav.bearing,
+                    snapped = snap.point,
+                    snapSegment = snap.segment,
+                    offRoute = offRoute,
+                    nextStopIndex = nextStop,
+                    nextStepIndex = stepIdx ?: route.steps.size,
+                    distToNextStop = distToStop,
+                    arrow = arrow,
+                    instruction = instruction,
+                    distToManeuver = distManeuver,
+                    remainingM = remaining,
+                    remainingSec = route.durationSeconds * remaining / max(tr.length, 1.0),
+                    finished = finished,
+                    announcement = announce ?: cur.nav.announcement
+                )
+            )
+        }
+
+        // Відхилення від маршруту: після кількох підряд оновлень перераховуємо шлях від поточного місця
+        offRouteCount = if (offRoute) offRouteCount + 1 else 0
+        val now = System.currentTimeMillis()
+        if (offRouteCount >= 3 && !finished && !nav.rerouting && now - lastRerouteAt > REROUTE_COOLDOWN_MS) {
+            lastRerouteAt = now
+            reroute(user, nextStop)
+        }
+    }
+
+    private fun reroute(user: LatLon, nextStop: Int) {
+        val route = _state.value.route ?: return
+        val remaining = route.stops.drop(nextStop)
+        if (remaining.isEmpty()) return
+        _state.update { it.copy(nav = it.nav.copy(rerouting = true)) }
+        viewModelScope.launch {
+            try {
+                val result = Api.route(listOf(user) + remaining.map { it.pos })
+                    ?: error("Не вдалося перерахувати маршрут")
+                tracker = RouteTracker(result.geometry, result.steps, remaining.map { it.pos }, nextStop)
+                lastAnnouncedStep = -1
+                offRouteCount = 0
+                _state.update {
+                    it.copy(
+                        route = route.copy(
+                            geometry = result.geometry,
+                            distanceMeters = result.distance,
+                            durationSeconds = result.duration,
+                            steps = result.steps
+                        ),
+                        nav = it.nav.copy(
+                            rerouting = false, offRoute = false, snapSegment = 0,
+                            announcement = announcement("Маршрут перераховано")
+                        )
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(nav = it.nav.copy(rerouting = false)) }
+            }
+        }
     }
 
     private fun editStops(stops: List<Place>) {
@@ -333,5 +537,9 @@ class MainViewModel : ViewModel() {
         const val MAX_PLACES = 60
         const val MAX_PLACES_EXTENDED = 150
         const val MAX_FOOD = 120
+        const val ARRIVE_RADIUS_M = 35.0
+        const val ANNOUNCE_DISTANCE_M = 150.0
+        const val OFF_ROUTE_M = 50.0
+        const val REROUTE_COOLDOWN_MS = 15_000L
     }
 }

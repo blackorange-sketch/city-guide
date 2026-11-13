@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -35,7 +36,12 @@ data class WikiInfo(
     val wikiLang: String?
 )
 
-data class RouteResult(val geometry: List<LatLon>, val distance: Double, val duration: Double)
+data class RouteResult(
+    val geometry: List<LatLon>,
+    val distance: Double,
+    val duration: Double,
+    val steps: List<Step>
+)
 
 data class Suggestion(val name: String, val subtitle: String, val lat: Double, val lon: Double)
 
@@ -275,6 +281,7 @@ object Api {
             .newBuilder()
             .addQueryParameter("overview", "full")
             .addQueryParameter("geometries", "geojson")
+            .addQueryParameter("steps", "true")
             .build()
         val route = execute(Request.Builder().url(url).build())
             .jsonObject["routes"]?.jsonArray?.firstOrNull()?.jsonObject
@@ -283,10 +290,27 @@ object Api {
             val p = it.jsonArray
             LatLon(lat = p[1].jsonPrimitive.double, lon = p[0].jsonPrimitive.double)
         }
+        val steps = route["legs"]?.jsonArray.orEmpty().flatMap { leg ->
+            leg.jsonObject["steps"]?.jsonArray.orEmpty().mapNotNull { st ->
+                val so = st.jsonObject
+                val maneuver = so["maneuver"] as? JsonObject ?: return@mapNotNull null
+                val loc = maneuver["location"]?.jsonArray ?: return@mapNotNull null
+                Step(
+                    lat = loc[1].jsonPrimitive.double,
+                    lon = loc[0].jsonPrimitive.double,
+                    type = maneuver["type"]?.jsonPrimitive?.contentOrNull ?: "turn",
+                    modifier = maneuver["modifier"]?.jsonPrimitive?.contentOrNull,
+                    street = so["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    distance = so["distance"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    exit = maneuver["exit"]?.jsonPrimitive?.intOrNull
+                )
+            }
+        }
         RouteResult(
             geometry = line,
             distance = route["distance"]!!.jsonPrimitive.double,
-            duration = route["duration"]!!.jsonPrimitive.double
+            duration = route["duration"]!!.jsonPrimitive.double,
+            steps = steps
         )
     }
 }

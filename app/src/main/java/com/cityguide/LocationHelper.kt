@@ -4,9 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
 import android.location.LocationManager
+import android.os.Looper
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationListenerCompat
 import androidx.core.location.LocationManagerCompat
 import androidx.core.os.CancellationSignal
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
@@ -30,6 +35,21 @@ suspend fun currentLocation(context: Context): Location? {
     } catch (e: SecurityException) {
         null
     }
+}
+
+/** Безперервні оновлення положення (GPS і мережа) для навігації. Дозвіл має бути виданий. */
+@SuppressLint("MissingPermission")
+fun locationUpdates(context: Context): Flow<Location> = callbackFlow {
+    val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    val listener = LocationListenerCompat { location -> trySend(location) }
+    val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        .filter { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
+    try {
+        providers.forEach { lm.requestLocationUpdates(it, 1_000L, 2f, listener, Looper.getMainLooper()) }
+    } catch (e: SecurityException) {
+        close(e)
+    }
+    awaitClose { lm.removeUpdates(listener) }
 }
 
 @SuppressLint("MissingPermission")

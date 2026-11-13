@@ -45,9 +45,21 @@ data class Place(
 /** Фото й розгорнутий опис зі Вікіпедії, що завантажуються при виборі місця. */
 data class PlaceDetail(val extract: String?, val imageUrl: String?, val pageUrl: String?)
 
+/** Маневр на шляху (з OSRM): де саме й що робити. */
+data class Step(
+    val lat: Double,
+    val lon: Double,
+    val type: String,
+    val modifier: String?,
+    val street: String,
+    val distance: Double,
+    val exit: Int?
+)
+
 data class Route(
     val stops: List<Place>,
     val geometry: List<LatLon>,
     val distanceMeters: Double,
-    val durationSeconds: Double
+    val durationSeconds: Double,
+    val steps: List<Step> = emptyList()
 )

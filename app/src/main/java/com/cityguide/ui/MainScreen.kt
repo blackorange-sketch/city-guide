@@ -31,6 +31,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -40,11 +41,15 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -58,6 +63,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,8 +75,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.cityguide.MainViewModel
+import com.cityguide.NavState
+import com.cityguide.Tts
 import com.cityguide.UiState
 import com.cityguide.currentLocation
+import com.cityguide.locationUpdates
 import com.cityguide.data.Api
 import com.cityguide.data.Category
 import com.cityguide.data.Place
@@ -102,18 +111,71 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
         vm.locate { currentLocation(appContext)?.let { it.latitude to it.longitude } }
     }
 
+    var wantNav by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result.values.any { it }) startLocate() else vm.showError("Немає дозволу на геолокацію")
+        when {
+            !result.values.any { it } -> {
+                wantNav = false
+                vm.showError("Немає дозволу на геолокацію")
+            }
+            wantNav -> {
+                wantNav = false
+                vm.startNavigation()
+            }
+            else -> startLocate()
+        }
+    }
+
+    fun hasLocationPermission() = LOCATION_PERMISSIONS.any {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
 
     val onLocateClick = {
         focus.clearFocus()
-        val granted = LOCATION_PERMISSIONS.any {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        if (hasLocationPermission()) startLocate() else permissionLauncher.launch(LOCATION_PERMISSIONS)
+    }
+
+    val onStartNav = {
+        if (hasLocationPermission()) {
+            vm.startNavigation()
+        } else {
+            wantNav = true
+            permissionLauncher.launch(LOCATION_PERMISSIONS)
         }
-        if (granted) startLocate() else permissionLauncher.launch(LOCATION_PERMISSIONS)
+    }
+
+    val nav = s.nav
+
+    // Під час навігації екран не гасне
+    val view = LocalView.current
+    DisposableEffect(nav.active) {
+        view.keepScreenOn = nav.active
+        onDispose { view.keepScreenOn = false }
+    }
+
+    // Безперервне відстеження положення, поки триває навігація
+    LaunchedEffect(nav.active) {
+        if (nav.active) {
+            try {
+                locationUpdates(context.applicationContext).collect { loc ->
+                    vm.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing else null)
+                }
+            } catch (e: SecurityException) {
+                vm.stopNavigation()
+                vm.showError("Немає дозволу на геолокацію")
+            }
+        }
+    }
+
+    // Голосові підказки
+    val tts = remember { Tts(context) }
+    DisposableEffect(Unit) { onDispose { tts.shutdown() } }
+    LaunchedEffect(nav.announcement?.id) {
+        val announcement = nav.announcement
+        if (announcement != null && nav.voice) tts.speak(announcement.text)
     }
 
     val bottomPad = if (panelTop > 0) (rootHeight - panelTop).coerceAtLeast(0) else 0
@@ -132,9 +194,11 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             foods = if (s.showFood) s.foods else emptyList(),
             route = route,
             selected = selected,
+            nav = nav,
             topPaddingPx = searchBottom + (8 * density).toInt(),
             bottomPaddingPx = bottomPad + (8 * density).toInt(),
-            onPlaceClick = vm::selectPlace,
+            onPlaceClick = { id -> if (!nav.active) vm.selectPlace(id) },
+            onUserPan = { if (nav.active) vm.setFollow(false) },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -146,63 +210,72 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 .statusBarsPadding()
                 .padding(12.dp)
         ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onGloballyPositioned { searchBottom = it.boundsInRoot().bottom.roundToInt() },
-                shape = RoundedCornerShape(28.dp),
-                shadowElevation = 8.dp,
-                tonalElevation = 2.dp
-            ) {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextField(
-                            value = s.query,
-                            onValueChange = vm::onQuery,
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            placeholder = { Text("Місто або село") },
-                            leadingIcon = { Text("🔍", fontSize = 18.sp) },
-                            trailingIcon = {
-                                if (s.query.isNotEmpty()) {
-                                    Text(
-                                        "✕",
-                                        modifier = Modifier
-                                            .clickable { vm.onQuery("") }
-                                            .padding(12.dp),
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                    )
-                                }
-                            },
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = {
-                                focus.clearFocus()
-                                vm.search()
-                            }),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                disabledContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                disabledIndicatorColor = Color.Transparent
+            if (nav.active) {
+                NavBanner(
+                    nav = nav,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { searchBottom = it.boundsInRoot().bottom.roundToInt() }
+                )
+            } else {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { searchBottom = it.boundsInRoot().bottom.roundToInt() },
+                    shape = RoundedCornerShape(28.dp),
+                    shadowElevation = 8.dp,
+                    tonalElevation = 2.dp
+                ) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextField(
+                                value = s.query,
+                                onValueChange = vm::onQuery,
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("Місто або село") },
+                                leadingIcon = { Text("🔍", fontSize = 18.sp) },
+                                trailingIcon = {
+                                    if (s.query.isNotEmpty()) {
+                                        Text(
+                                            "✕",
+                                            modifier = Modifier
+                                                .clickable { vm.onQuery("") }
+                                                .padding(12.dp),
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                        )
+                                    }
+                                },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = {
+                                    focus.clearFocus()
+                                    vm.search()
+                                }),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    disabledContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    disabledIndicatorColor = Color.Transparent
+                                )
                             )
-                        )
-                        Text(
-                            "📍",
-                            fontSize = 22.sp,
-                            modifier = Modifier
-                                .clickable(enabled = !s.loading, onClick = onLocateClick)
-                                .padding(horizontal = 16.dp, vertical = 12.dp)
-                        )
-                    }
-                    if (s.loading) {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                            Text(
+                                "📍",
+                                fontSize = 22.sp,
+                                modifier = Modifier
+                                    .clickable(enabled = !s.loading, onClick = onLocateClick)
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                            )
+                        }
+                        if (s.loading) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
                     }
                 }
             }
 
-            if (s.suggestions.isNotEmpty()) {
+            if (!nav.active && s.suggestions.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -276,6 +349,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 ) {
                     s.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     when {
+                        nav.active && route != null -> NavContent(nav, route, vm)
                         selected != null -> PlaceContent(
                             place = selected,
                             detail = s.detail,
@@ -285,7 +359,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                             onAdd = { vm.addToRoute(selected) },
                             onClose = vm::clearSelection
                         )
-                        route != null -> RouteContent(route, s.loading, vm)
+                        route != null -> RouteContent(route, s.loading, vm, onStartNav)
                         s.places.isNotEmpty() -> PlanContent(s, vm)
                         s.error == null -> Text(
                             s.status ?: "Введіть місто або натисніть 📍, щоб знайти цікаві місця поруч",
@@ -472,7 +546,12 @@ private fun PlanContent(s: UiState, vm: MainViewModel) {
 }
 
 @Composable
-private fun RouteContent(route: Route, loading: Boolean, vm: MainViewModel) {
+private fun RouteContent(
+    route: Route,
+    loading: Boolean,
+    vm: MainViewModel,
+    onStartNav: () -> Unit
+) {
     val context = LocalContext.current
     val km = route.distanceMeters / 1000.0
     val walkMin = (route.durationSeconds / 60).roundToInt()
@@ -582,13 +661,18 @@ private fun RouteContent(route: Route, loading: Boolean, vm: MainViewModel) {
             shape = RoundedCornerShape(14.dp)
         ) { Text("Змінити параметри") }
         Button(
-            onClick = { openUrl(context, googleMapsUrl(route)) },
+            onClick = onStartNav,
+            enabled = !loading,
             modifier = Modifier
                 .weight(1f)
                 .height(48.dp),
             shape = RoundedCornerShape(14.dp)
-        ) { Text("Навігація") }
+        ) { Text("▶ Навігація") }
     }
+    TextButton(
+        onClick = { openUrl(context, googleMapsUrl(route)) },
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Відкрити в Google Maps") }
 }
 
 private fun googleMapsUrl(route: Route): String {
@@ -619,3 +703,135 @@ private fun formatMinutes(minutes: Int): String {
         else -> "$h год $m хв"
     }
 }
+
+@Composable
+private fun NavBanner(nav: NavState, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.primary,
+        shadowElevation = 8.dp
+    ) {
+        Row(
+            Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val icon = when {
+                nav.finished -> "🎉"
+                nav.user == null -> "📡"
+                else -> nav.arrow
+            }
+            Text(icon, fontSize = 40.sp, color = MaterialTheme.colorScheme.onPrimary)
+            Spacer(Modifier.width(16.dp))
+            Column {
+                when {
+                    nav.finished -> Text(
+                        "Маршрут завершено",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    nav.user == null -> Column {
+                        Text(
+                            "Очікую сигнал GPS…",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Text(
+                            "Вийдіть на відкрите місце й перевірте, чи увімкнена геолокація",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                        )
+                    }
+                    else -> {
+                        Text(
+                            formatDistance(nav.distToManeuver),
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Text(
+                            nav.instruction,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavContent(nav: NavState, route: Route, vm: MainViewModel) {
+    if (nav.finished) {
+        Text(
+            "Ви пройшли весь маршрут. Дякуємо за прогулянку!",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Button(
+            onClick = vm::stopNavigation,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) { Text("Закрити") }
+        return
+    }
+
+    val stop = route.stops.getOrNull(nav.nextStopIndex)
+    if (stop != null) {
+        Text(
+            "Далі: ${nav.nextStopIndex + 1}. ${stop.name}",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (nav.user != null) {
+            Text(
+                "До зупинки: ${formatDistance(nav.distToNextStop)} · лишилось всього " +
+                    "${formatDistance(nav.remainingM)} (~${formatMinutes((nav.remainingSec / 60).roundToInt())})",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+    if (nav.rerouting || nav.offRoute) {
+        Text(
+            "Ви відхилились від маршруту, перераховую шлях…",
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
+    SwitchRow("Голосові підказки", nav.voice, true) { vm.setVoice(it) }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedButton(
+            onClick = vm::skipStop,
+            modifier = Modifier
+                .weight(1f)
+                .height(48.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) { Text("Пропустити зупинку") }
+        if (!nav.follow) {
+            Button(
+                onClick = { vm.setFollow(true) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) { Text("Центрувати") }
+        }
+    }
+    Button(
+        onClick = vm::stopNavigation,
+        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        shape = RoundedCornerShape(14.dp)
+    ) { Text("Завершити навігацію") }
+}
+
+private fun formatDistance(meters: Double): String =
+    if (meters < 1000) "${((meters / 10).roundToInt() * 10).coerceAtLeast(0)} м"
+    else "${"%.1f".format(meters / 1000.0)} км"

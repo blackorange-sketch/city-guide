@@ -15,9 +15,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.cityguide.NavState
 import com.cityguide.data.City
+import com.cityguide.data.LatLon
 import com.cityguide.data.Place
 import com.cityguide.data.Route
+import com.cityguide.domain.Instructions
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -27,6 +30,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
@@ -43,11 +47,19 @@ import kotlin.math.hypot
 
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 private const val ROUTE_SRC = "route-src"
+private const val TRAVELED_SRC = "traveled-src"
 private const val PLACES_SRC = "places-src"
 private const val FOOD_SRC = "food-src"
 private const val STOPS_SRC = "stops-src"
+private const val MANEUVER_SRC = "maneuver-src"
 private const val SELECTED_SRC = "selected-src"
+private const val USER_SRC = "user-src"
 private const val EMPTY_FC = """{"type":"FeatureCollection","features":[]}"""
+
+private const val TEAL = "#00796B"
+private const val GREY = "#9E9E9E"
+private const val ORANGE = "#FF6F00"
+private const val BLUE = "#4285F4"
 
 @Composable
 fun MapPane(
@@ -56,9 +68,11 @@ fun MapPane(
     foods: List<Place>,
     route: Route?,
     selected: Place?,
+    nav: NavState,
     topPaddingPx: Int,
     bottomPaddingPx: Int,
     onPlaceClick: (String) -> Unit,
+    onUserPan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -72,6 +86,7 @@ fun MapPane(
     var styleReady by remember { mutableStateOf(false) }
     val latestPlaces by rememberUpdatedState(places + foods)
     val latestOnClick by rememberUpdatedState(onPlaceClick)
+    val latestOnPan by rememberUpdatedState(onUserPan)
 
     DisposableEffect(lifecycle, mapView) {
         val observer = LifecycleEventObserver { _, event ->
@@ -113,17 +128,36 @@ fun MapPane(
                 }
             }
 
+            // Користувач зрушив карту руками: у навігації вимикаємо слідування за ним
+            m.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    latestOnPan()
+                }
+            }
+
             m.setStyle(STYLE_URL) { style ->
+                style.addSource(GeoJsonSource(TRAVELED_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(ROUTE_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(PLACES_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(FOOD_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(STOPS_SRC, EMPTY_FC))
+                style.addSource(GeoJsonSource(MANEUVER_SRC, EMPTY_FC))
                 style.addSource(GeoJsonSource(SELECTED_SRC, EMPTY_FC))
+                style.addSource(GeoJsonSource(USER_SRC, EMPTY_FC))
 
+                // Пройдений відрізок (сірий) під активним маршрутом
+                style.addLayer(
+                    LineLayer("traveled-layer", TRAVELED_SRC).withProperties(
+                        PropertyFactory.lineColor(Color.parseColor(GREY)),
+                        PropertyFactory.lineWidth(5f),
+                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                    )
+                )
                 style.addLayer(
                     LineLayer("route-layer", ROUTE_SRC).withProperties(
-                        PropertyFactory.lineColor(Color.parseColor("#00796B")),
-                        PropertyFactory.lineWidth(5f),
+                        PropertyFactory.lineColor(Color.parseColor(TEAL)),
+                        PropertyFactory.lineWidth(6f),
                         PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                         PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
                     )
@@ -146,10 +180,11 @@ fun MapPane(
                         PropertyFactory.circleStrokeWidth(2f)
                     )
                 )
+                // Зупинки маршруту: колір залежить від стану (пройдена, наступна, попереду)
                 style.addLayer(
                     CircleLayer("stops-layer", STOPS_SRC).withProperties(
                         PropertyFactory.circleRadius(13f),
-                        PropertyFactory.circleColor(Color.parseColor("#00796B")),
+                        PropertyFactory.circleColor(Expression.get("c")),
                         PropertyFactory.circleStrokeColor(Color.WHITE),
                         PropertyFactory.circleStrokeWidth(2.5f)
                     )
@@ -164,12 +199,47 @@ fun MapPane(
                         PropertyFactory.textIgnorePlacement(true)
                     )
                 )
+                // Позначки поворотів
+                style.addLayer(
+                    CircleLayer("maneuver-layer", MANEUVER_SRC).withProperties(
+                        PropertyFactory.circleRadius(12f),
+                        PropertyFactory.circleColor(Color.WHITE),
+                        PropertyFactory.circleStrokeColor(Color.parseColor(TEAL)),
+                        PropertyFactory.circleStrokeWidth(2.5f)
+                    )
+                )
+                style.addLayer(
+                    SymbolLayer("maneuver-arrows-layer", MANEUVER_SRC).withProperties(
+                        PropertyFactory.textField(Expression.get("a")),
+                        PropertyFactory.textSize(15f),
+                        PropertyFactory.textColor(Color.parseColor(TEAL)),
+                        PropertyFactory.textFont(arrayOf("Noto Sans Bold")),
+                        PropertyFactory.textAllowOverlap(true),
+                        PropertyFactory.textIgnorePlacement(true)
+                    )
+                )
                 style.addLayer(
                     CircleLayer("selected-layer", SELECTED_SRC).withProperties(
                         PropertyFactory.circleRadius(17f),
                         PropertyFactory.circleColor(Color.TRANSPARENT),
-                        PropertyFactory.circleStrokeColor(Color.parseColor("#FF6F00")),
+                        PropertyFactory.circleStrokeColor(Color.parseColor(ORANGE)),
                         PropertyFactory.circleStrokeWidth(3.5f)
+                    )
+                )
+                // Положення користувача: напівпрозорий ореол і крапка
+                style.addLayer(
+                    CircleLayer("user-halo-layer", USER_SRC).withProperties(
+                        PropertyFactory.circleRadius(20f),
+                        PropertyFactory.circleColor(Color.parseColor(BLUE)),
+                        PropertyFactory.circleOpacity(0.25f)
+                    )
+                )
+                style.addLayer(
+                    CircleLayer("user-dot-layer", USER_SRC).withProperties(
+                        PropertyFactory.circleRadius(8f),
+                        PropertyFactory.circleColor(Color.parseColor(BLUE)),
+                        PropertyFactory.circleStrokeColor(Color.WHITE),
+                        PropertyFactory.circleStrokeWidth(3f)
                     )
                 )
                 // Підписи з'являються при наближенні
@@ -214,14 +284,23 @@ fun MapPane(
         )
     }
 
-    // Дані на карті
-    LaunchedEffect(styleReady, places, foods, route, selected) {
+    // Місця, заклади, вибране
+    LaunchedEffect(styleReady, places, foods, selected) {
         val style = map?.style ?: return@LaunchedEffect
         style.getSourceAs<GeoJsonSource>(PLACES_SRC)?.setGeoJson(placesJson(places))
         style.getSourceAs<GeoJsonSource>(FOOD_SRC)?.setGeoJson(placesJson(foods))
-        style.getSourceAs<GeoJsonSource>(ROUTE_SRC)?.setGeoJson(routeJson(route))
-        style.getSourceAs<GeoJsonSource>(STOPS_SRC)?.setGeoJson(stopsJson(route))
         style.getSourceAs<GeoJsonSource>(SELECTED_SRC)?.setGeoJson(selectedJson(selected))
+    }
+
+    // Маршрут, зупинки, повороти, користувач (оновлюється з кожним GPS-фіксом)
+    LaunchedEffect(styleReady, route, nav) {
+        val style = map?.style ?: return@LaunchedEffect
+        val (traveled, remaining) = routeSplit(route, nav)
+        style.getSourceAs<GeoJsonSource>(TRAVELED_SRC)?.setGeoJson(lineJson(traveled))
+        style.getSourceAs<GeoJsonSource>(ROUTE_SRC)?.setGeoJson(lineJson(remaining))
+        style.getSourceAs<GeoJsonSource>(STOPS_SRC)?.setGeoJson(stopsJson(route, nav))
+        style.getSourceAs<GeoJsonSource>(MANEUVER_SRC)?.setGeoJson(maneuversJson(route, nav))
+        style.getSourceAs<GeoJsonSource>(USER_SRC)?.setGeoJson(userJson(nav))
     }
 
     // Камера: на місто, на весь маршрут, на вибране місце
@@ -233,6 +312,7 @@ fun MapPane(
     }
     LaunchedEffect(styleReady, route) {
         val m = map ?: return@LaunchedEffect
+        if (nav.active) return@LaunchedEffect
         val points = route?.geometry?.map { LatLng(it.lat, it.lon) }
         if (points != null && points.size >= 2) {
             val bounds = LatLngBounds.Builder().includes(points).build()
@@ -243,6 +323,29 @@ fun MapPane(
         val m = map ?: return@LaunchedEffect
         if (selected != null) {
             m.animateCamera(CameraUpdateFactory.newLatLng(LatLng(selected.lat, selected.lon)))
+        }
+    }
+
+    // Навігація: камера слідує за користувачем, повернута за напрямком руху
+    LaunchedEffect(styleReady, nav.user, nav.follow, nav.active) {
+        val m = map ?: return@LaunchedEffect
+        val user = nav.user
+        if (nav.active && nav.follow && user != null) {
+            val position = CameraPosition.Builder()
+                .target(LatLng(user.lat, user.lon))
+                .zoom(17.0)
+                .bearing(nav.bearing.toDouble())
+                .tilt(45.0)
+                .build()
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(position), 900)
+        }
+    }
+    // Після завершення навігації повертаємо карту в нормальне положення
+    LaunchedEffect(nav.active) {
+        val m = map ?: return@LaunchedEffect
+        if (!nav.active) {
+            val position = CameraPosition.Builder(m.cameraPosition).bearing(0.0).tilt(0.0).build()
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(position))
         }
     }
 
@@ -284,22 +387,59 @@ private fun placesJson(places: List<Place>): String =
 private fun selectedJson(place: Place?): String =
     if (place == null) EMPTY_FC else featureCollection(listOf(pointFeature(place.lat, place.lon)))
 
-private fun stopsJson(route: Route?): String =
+/** Зупинки: пройдені сірі, наступна помаранчева, решта бірюзові. */
+private fun stopsJson(route: Route?, nav: NavState): String =
     featureCollection(
         route?.stops.orEmpty().mapIndexed { i, p ->
-            pointFeature(p.lat, p.lon, mapOf("n" to (i + 1).toString()))
+            val color = when {
+                !nav.active -> TEAL
+                i < nav.nextStopIndex -> GREY
+                i == nav.nextStopIndex -> ORANGE
+                else -> TEAL
+            }
+            pointFeature(p.lat, p.lon, mapOf("n" to (i + 1).toString(), "c" to color))
         }
     )
 
-private fun routeJson(route: Route?): String {
-    val geometry = route?.geometry
-    if (geometry.isNullOrEmpty()) return EMPTY_FC
+/** Найближчі повороти, які ще попереду (початок і прибуття не показуємо). */
+private fun maneuversJson(route: Route?, nav: NavState): String {
+    if (route == null || !nav.active) return EMPTY_FC
+    val features = route.steps
+        .withIndex()
+        .filter { (i, s) -> i >= nav.nextStepIndex && s.type != "depart" && s.type != "arrive" }
+        .take(8)
+        .map { (_, s) -> pointFeature(s.lat, s.lon, mapOf("a" to Instructions.mapArrow(s))) }
+    return featureCollection(features)
+}
+
+private fun userJson(nav: NavState): String {
+    val user = nav.user
+    return if (nav.active && user != null) {
+        featureCollection(listOf(pointFeature(user.lat, user.lon)))
+    } else {
+        EMPTY_FC
+    }
+}
+
+/** Розбиває маршрут на пройдену й залишену частини за положенням користувача. */
+private fun routeSplit(route: Route?, nav: NavState): Pair<List<LatLon>, List<LatLon>> {
+    val geometry = route?.geometry ?: return emptyList<LatLon>() to emptyList()
+    val snapped = nav.snapped
+    if (!nav.active || snapped == null || geometry.size < 2) return emptyList<LatLon>() to geometry
+    val i = nav.snapSegment.coerceIn(0, geometry.size - 2)
+    val traveled = geometry.subList(0, i + 1) + snapped
+    val remaining = listOf(snapped) + geometry.subList(i + 1, geometry.size)
+    return traveled to remaining
+}
+
+private fun lineJson(points: List<LatLon>): String {
+    if (points.size < 2) return EMPTY_FC
     val feature = buildJsonObject {
         put("type", "Feature")
         putJsonObject("geometry") {
             put("type", "LineString")
             putJsonArray("coordinates") {
-                geometry.forEach { p ->
+                points.forEach { p ->
                     add(JsonArray(listOf(JsonPrimitive(p.lon), JsonPrimitive(p.lat))))
                 }
             }
