@@ -66,7 +66,7 @@
     <string name="side_straight">straight</string>
     <string name="search_placeholder">City or village</string>
     <string name="hint_title">Where shall we walk?</string>
-    <string name="hint_text">Enter a city or tap 📍 to find interesting places nearby</string>
+    <string name="hint_text">Enter a city, tap 📍, or long-press the map to pick a search point</string>
     <string name="pick_start_prompt">Tap the map to choose a starting point</string>
     <string name="cancel">Cancel</string>
     <string name="close">Close</string>
@@ -162,4 +162,6 @@
     <string name="photo_unavailable">Photo search needs the proxy server with an AI key (see README).</string>
     <string name="photo_not_found">Couldn\'t recognise it. Try a closer, sharper photo.</string>
     <string name="photo_failed">Photo search failed. Try again later.</string>
+    <string name="map_style">Map style</string>
+    <string name="point_name">Selected point</string>
 </resources>

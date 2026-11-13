@@ -66,7 +66,7 @@
     <string name="side_straight">prosto</string>
     <string name="search_placeholder">Miasto lub wieś</string>
     <string name="hint_title">Dokąd idziemy na spacer?</string>
-    <string name="hint_text">Wpisz miasto lub dotknij 📍, aby znaleźć ciekawe miejsca w pobliżu</string>
+    <string name="hint_text">Wpisz miasto, dotknij 📍 lub przytrzymaj mapę, aby wybrać punkt wyszukiwania</string>
     <string name="pick_start_prompt">Dotknij mapy, aby wybrać punkt startowy</string>
     <string name="cancel">Anuluj</string>
     <string name="close">Zamknij</string>
@@ -162,4 +162,6 @@
     <string name="photo_unavailable">Wyszukiwanie po zdjęciu wymaga serwera proxy z kluczem AI (zob. README).</string>
     <string name="photo_not_found">Nie udało się rozpoznać. Spróbuj ostrzejszego zdjęcia z bliska.</string>
     <string name="photo_failed">Wyszukiwanie po zdjęciu nie powiodło się. Spróbuj później.</string>
+    <string name="map_style">Styl mapy</string>
+    <string name="point_name">Wybrany punkt</string>
 </resources>

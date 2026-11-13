@@ -66,7 +66,7 @@
     <string name="side_straight">geradeaus</string>
     <string name="search_placeholder">Stadt oder Dorf</string>
     <string name="hint_title">Wohin gehen wir spazieren?</string>
-    <string name="hint_text">Geben Sie eine Stadt ein oder tippen Sie auf 📍, um interessante Orte in der Nähe zu finden</string>
+    <string name="hint_text">Stadt eingeben, 📍 tippen oder die Karte lange drücken, um einen Suchpunkt zu wählen</string>
     <string name="pick_start_prompt">Tippen Sie auf die Karte, um den Startpunkt zu wählen</string>
     <string name="cancel">Abbrechen</string>
     <string name="close">Schließen</string>
@@ -162,4 +162,6 @@
     <string name="photo_unavailable">Die Fotosuche braucht den Proxy-Server mit KI-Schlüssel (siehe README).</string>
     <string name="photo_not_found">Nicht erkannt. Versuchen Sie ein schärferes Foto aus der Nähe.</string>
     <string name="photo_failed">Die Fotosuche ist fehlgeschlagen. Später erneut versuchen.</string>
+    <string name="map_style">Kartenstil</string>
+    <string name="point_name">Gewählter Punkt</string>
 </resources>

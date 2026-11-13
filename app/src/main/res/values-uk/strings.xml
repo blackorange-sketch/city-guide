@@ -66,7 +66,7 @@
     <string name="side_straight">прямо</string>
     <string name="search_placeholder">Місто або село</string>
     <string name="hint_title">Куди підемо гуляти?</string>
-    <string name="hint_text">Введіть місто або натисніть 📍, щоб знайти цікаві місця поруч</string>
+    <string name="hint_text">Введіть місто, натисніть 📍 або утримуйте палець на карті, щоб вибрати точку пошуку</string>
     <string name="pick_start_prompt">Торкніться карти, щоб обрати стартову точку</string>
     <string name="cancel">Скасувати</string>
     <string name="close">Закрити</string>
@@ -162,4 +162,6 @@
     <string name="photo_unavailable">Пошук за фото потребує проксі-сервера з ключем ШІ (див. README).</string>
     <string name="photo_not_found">Не вдалося розпізнати. Спробуйте чіткіше фото ближче до об’єкта.</string>
     <string name="photo_failed">Пошук за фото не вдався. Спробуйте пізніше.</string>
+    <string name="map_style">Стиль карти</string>
+    <string name="point_name">Вибрана точка</string>
 </resources>

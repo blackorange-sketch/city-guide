@@ -47,8 +47,19 @@ import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import kotlin.math.hypot
 
-private const val STYLE_LIGHT = "https://tiles.openfreemap.org/styles/liberty"
-private const val STYLE_DARK = "https://tiles.openfreemap.org/styles/dark"
+/** Стилі карти OpenFreeMap (безкоштовні, без ключів): світлі й темні. */
+enum class MapStyle(val url: String, val label: String, val dark: Boolean) {
+    LIBERTY("https://tiles.openfreemap.org/styles/liberty", "Liberty", false),
+    BRIGHT("https://tiles.openfreemap.org/styles/bright", "Bright", false),
+    POSITRON("https://tiles.openfreemap.org/styles/positron", "Positron", false),
+    DARK("https://tiles.openfreemap.org/styles/dark", "Dark", true),
+    FIORD("https://tiles.openfreemap.org/styles/fiord", "Fiord", true);
+
+    companion object {
+        fun forTheme(dark: Boolean): List<MapStyle> = entries.filter { it.dark == dark }
+        fun default(dark: Boolean): MapStyle = if (dark) DARK else LIBERTY
+    }
+}
 private const val ROUTE_SRC = "route-src"
 private const val TRAVELED_SRC = "traveled-src"
 private const val PLACES_SRC = "places-src"
@@ -82,6 +93,9 @@ fun MapPane(
     onPlaceClick: (String) -> Unit,
     onMapPick: (Double, Double) -> Unit,
     onUserPan: () -> Unit,
+    styleUrl: String,
+    onStyleFailed: () -> Unit,
+    onMapLongPress: (Double, Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -99,6 +113,8 @@ fun MapPane(
     val latestOnPan by rememberUpdatedState(onUserPan)
     val latestPicking by rememberUpdatedState(pickingStart)
     val latestOnPick by rememberUpdatedState(onMapPick)
+    val latestStyleFailed by rememberUpdatedState(onStyleFailed)
+    val latestLongPress by rememberUpdatedState(onMapLongPress)
 
     DisposableEffect(lifecycle, mapView) {
         val observer = LifecycleEventObserver { _, event ->
@@ -144,6 +160,15 @@ fun MapPane(
                 }
             }
 
+            // Довге натискання: нова точка пошуку й старту
+            m.addOnMapLongClickListener { latLng ->
+                latestLongPress(latLng.latitude, latLng.longitude)
+                true
+            }
+
+            // Стиль не завантажився (наприклад, немає такого URL): повертаємося до типового
+            m.addOnDidFailLoadingMapListener { latestStyleFailed() }
+
             // Користувач зрушив карту руками: у навігації вимикаємо слідування за ним
             m.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
@@ -156,9 +181,9 @@ fun MapPane(
     }
 
     // Стиль карти залежить від теми: після перемикання шари додаються заново
-    LaunchedEffect(map, dark) {
+    LaunchedEffect(map, dark, styleUrl) {
         val m = map ?: return@LaunchedEffect
-        m.setStyle(if (dark) STYLE_DARK else STYLE_LIGHT) { style ->
+        m.setStyle(styleUrl) { style ->
             installLayers(style, dark, startLabel)
             styleVersion++
         }

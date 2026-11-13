@@ -44,7 +44,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -137,6 +139,21 @@ fun MainScreen(
         val uri = cameraUri
         if (ok && uri != null) vm.identifyPhoto { PhotoHelper.loadJpeg(appContext, uri) }
     }
+
+    // --- стиль карти: окремий вибір для світлої й темної теми, зберігається ---
+    val darkTheme = LocalDarkTheme.current
+    val prefs = remember { context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE) }
+    fun savedStyle(dark: Boolean): MapStyle =
+        MapStyle.entries.firstOrNull { it.name == prefs.getString(if (dark) "map_dark" else "map_light", null) && it.dark == dark }
+            ?: MapStyle.default(dark)
+    var lightStyle by remember { mutableStateOf(savedStyle(false)) }
+    var darkStyle by remember { mutableStateOf(savedStyle(true)) }
+    val mapStyle = if (darkTheme) darkStyle else lightStyle
+    fun chooseStyle(style: MapStyle) {
+        if (style.dark) darkStyle = style else lightStyle = style
+        prefs.edit().putString(if (style.dark) "map_dark" else "map_light", style.name).apply()
+    }
+    var styleMenu by remember { mutableStateOf(false) }
 
     var wantNav by remember { mutableStateOf(false) }
     var wantStart by remember { mutableStateOf(false) }
@@ -269,6 +286,9 @@ fun MainScreen(
             bottomPaddingPx = bottomPad + (8 * density).toInt(),
             onPlaceClick = { id -> if (!nav.active) vm.selectPlace(id) },
             onMapPick = { lat, lon -> vm.setStart(lat, lon) },
+            styleUrl = mapStyle.url,
+            onStyleFailed = { if (mapStyle != MapStyle.default(darkTheme)) chooseStyle(MapStyle.default(darkTheme)) },
+            onMapLongPress = { lat, lon -> if (!nav.active && !s.loading) vm.searchAt(lat, lon) },
             onUserPan = { if (nav.active) vm.setFollow(false) },
             modifier = Modifier.fillMaxSize()
         )
@@ -498,6 +518,40 @@ fun MainScreen(
                     city = if (info.place.id.startsWith("photo/")) "" else s.city?.name.orEmpty()
                 )
             }
+        }
+
+        AnimatedVisibility(
+            visible = !nav.active,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = (searchBottom / density).dp + 12.dp, end = 14.dp),
+            enter = fadeIn(tween(250)),
+            exit = fadeOut(tween(150))
+        ) {
+            IconCircle(
+                description = stringResource(R.string.map_style),
+                onClick = { styleMenu = true },
+                size = 44,
+                container = MaterialTheme.colorScheme.surface
+            ) { Text("🗺", fontSize = 20.sp) }
+        }
+        if (styleMenu) {
+            AlertDialog(
+                onDismissRequest = { styleMenu = false },
+                title = { Text(stringResource(R.string.map_style)) },
+                text = {
+                    Column {
+                        MapStyle.forTheme(darkTheme).forEach { style ->
+                            TextButton(onClick = { chooseStyle(style); styleMenu = false }) {
+                                Text((if (style == mapStyle) "● " else "○ ") + style.label)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { styleMenu = false }) { Text(stringResource(R.string.close)) }
+                }
+            )
         }
 
         PhotoDialogs(

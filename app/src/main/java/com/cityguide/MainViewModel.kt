@@ -194,6 +194,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Нова точка пошуку, вибрана на карті довгим натисканням: місця навколо неї, старт маршруту звідти ж. */
+    fun searchAt(lat: Double, lon: Double) {
+        suggestJob?.cancel()
+        launchLoading(str(R.string.status_loading_places)) {
+            val name = Api.reverse(lat, lon, lang) ?: str(R.string.point_name)
+            _state.update { it.copy(query = name, suggestions = emptyList()) }
+            loadPlaces(City(name, lat, lon))
+            _state.update { it.copy(start = LatLon(lat, lon)) }
+        }
+    }
+
     fun showError(message: String) = _state.update { it.copy(error = message, status = null) }
 
     fun dismissError() = _state.update { it.copy(error = null) }
