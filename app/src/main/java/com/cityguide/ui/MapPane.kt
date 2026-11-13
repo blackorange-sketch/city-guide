@@ -168,7 +168,7 @@ fun MapPane(
             }
 
             // Стиль не завантажився (наприклад, немає такого URL): повертаємося до типового
-            m.addOnDidFailLoadingMapListener { latestStyleFailed() }
+            mapView.addOnDidFailLoadingMapListener { _ -> latestStyleFailed() }
 
             // Користувач зрушив карту руками: у навігації вимикаємо слідування за ним
             m.addOnCameraMoveStartedListener { reason ->
